@@ -9,7 +9,12 @@
     "dev": "npm run dev --workspace=@media/dashboard",
     "build": "npm run build --workspace=@media/dashboard",
     "lint": "npm run lint --workspace=@media/dashboard",
-    "typecheck": "npm run typecheck --workspace=@media/dashboard"
+    "typecheck": "npm run typecheck --workspace=@media/dashboard",
+    "test": "npm test --workspace=@media/dashboard",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:generate": "npm run db:generate --workspace=@media/dashboard",
+    "db:migrate": "npm run db:migrate --workspace=@media/dashboard",
+    "db:seed": "npm run db:seed --workspace=@media/dashboard"
   }
 }
-

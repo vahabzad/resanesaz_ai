@@ -63,3 +63,14 @@
 5. تست نفوذ API، worker و deployment پیش از production
 6. retest پس از اصلاح و پیش از هر عرضهٔ عمده
 
+## وضعیت baseline اجرایی
+
+- نشست‌ها دیتابیسی و cookie امن در production هستند؛ ثبت‌نام عمومی فعال نیست.
+- حداقل طول رمز ۱۲ و حداکثر آن ۱۲۸ کاراکتر است.
+- انتخاب Media با query عضویت در سرور انجام می‌شود؛ mediaId ارسالی UI قابل اعتماد فرض نمی‌شود.
+- نقش‌های پایه deny-by-default تعریف شده و ماتریس مجوزها تست واحد دارد.
+- تغییر Media با actor، target، correlation ID و metadata نقش audit می‌شود.
+- پاسخ‌های API محتوای خطای داخلی را افشا نمی‌کنند و cache نمی‌شوند.
+- secret و دیتابیس محلی از Git خارج‌اند؛ فقط `.env.example` commit می‌شود.
+
+یادداشت وابستگی: در 2026-09-27، audit یک advisory سطح moderate در ابزار migration توسعه (`drizzle-kit` و loader قدیمی esbuild) گزارش کرد. مسیر آسیب‌پذیر dev server در runtime محصول استفاده نمی‌شود. پیشنهاد `npm audit fix --force` به‌دلیل downgrade شکسته اعمال نشد؛ این مورد تا اصلاح upstream باید در هر ارتقا بازبینی شود و ابزار migration نباید روی host عمومی expose شود.

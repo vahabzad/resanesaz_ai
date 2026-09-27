@@ -1,0 +1,21 @@
+name: media-command-center
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: media_command
+      POSTGRES_USER: media_app
+      POSTGRES_PASSWORD: local_media_password
+    ports:
+      - "127.0.0.1:54329:5432"
+    volumes:
+      - media_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U media_app -d media_command"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  media_postgres_data:

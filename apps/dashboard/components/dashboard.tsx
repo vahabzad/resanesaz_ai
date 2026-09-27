@@ -16,6 +16,8 @@ import {
   Globe2,
   Inbox,
   LayoutDashboard,
+  LoaderCircle,
+  LogOut,
   Menu,
   Newspaper,
   PenLine,
@@ -32,7 +34,10 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { authClient } from "@/lib/auth-client";
+import type { DashboardContext, MediaRole, MediaSummary } from "@/lib/contracts/context";
 import {
   crawlerHealth,
   destinations,
@@ -72,7 +77,30 @@ const navGroups = [
   },
 ];
 
-function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
+const roleLabels: Record<MediaRole, string> = {
+  owner: "مالک رسانه",
+  admin: "مدیر رسانه",
+  editor: "سردبیر",
+  journalist: "خبرنگار",
+  publisher: "مسئول انتشار",
+  viewer: "مشاهده‌گر",
+};
+
+function Sidebar({
+  open,
+  onClose,
+  context,
+  onSelectMedia,
+  switchingMediaId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  context: DashboardContext;
+  onSelectMedia: (media: MediaSummary) => void;
+  switchingMediaId: string | null;
+}) {
+  const [mediaMenuOpen, setMediaMenuOpen] = useState(false);
+
   return (
     <>
       <button className={`sidebar-backdrop ${open ? "is-open" : ""}`} onClick={onClose} aria-label="بستن منو" />
@@ -86,11 +114,33 @@ function Sidebar({ open, onClose }: { open: boolean; onClose: () => void }) {
           <button className="icon-button close-sidebar" onClick={onClose} aria-label="بستن منو"><X size={18} /></button>
         </div>
 
-        <button className="media-switcher">
-          <span className="media-avatar">د</span>
-          <span className="media-copy"><b>دیدبان فردا</b><small>رسانه فعال</small></span>
-          <ChevronDown size={16} />
-        </button>
+        <div className="media-switcher-wrap">
+          <button className="media-switcher" onClick={() => setMediaMenuOpen((value) => !value)} aria-expanded={mediaMenuOpen}>
+            <span className="media-avatar">{context.activeMedia.name.slice(0, 1)}</span>
+            <span className="media-copy"><b>{context.activeMedia.name}</b><small>{roleLabels[context.activeMedia.role]}</small></span>
+            <ChevronDown className={mediaMenuOpen ? "is-open" : ""} size={16} />
+          </button>
+          {mediaMenuOpen ? (
+            <div className="media-menu">
+              <span>تغییر رسانه</span>
+              {context.media.map((item) => (
+                <button
+                  className={item.id === context.activeMedia.id ? "active" : ""}
+                  disabled={switchingMediaId !== null}
+                  key={item.id}
+                  onClick={() => {
+                    onSelectMedia(item);
+                    setMediaMenuOpen(false);
+                  }}
+                >
+                  <i>{item.name.slice(0, 1)}</i>
+                  <span><b>{item.name}</b><small>{roleLabels[item.role]}</small></span>
+                  {switchingMediaId === item.id ? <LoaderCircle className="spin" size={14} /> : item.id === context.activeMedia.id ? <Check size={14} /> : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
 
         <nav className="main-nav" aria-label="منوی اصلی">
           {navGroups.map((group) => (
@@ -292,23 +342,56 @@ function PublishTimeline() {
   );
 }
 
-export function Dashboard() {
+export function Dashboard({ context }: { context: DashboardContext }) {
+  const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [switchingMediaId, setSwitchingMediaId] = useState<string | null>(null);
+  const firstName = context.user.name.trim().split(/\s+/)[0] || "همکار";
+  const initials = context.user.name.trim().split(/\s+/).slice(0, 2).map((part) => part.slice(0, 1)).join("");
+
+  async function selectMedia(media: MediaSummary) {
+    if (media.id === context.activeMedia.id || switchingMediaId) return;
+    setSwitchingMediaId(media.id);
+    const response = await fetch("/api/v1/media/select", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ mediaId: media.id }),
+    });
+    setSwitchingMediaId(null);
+    if (response.ok) router.refresh();
+  }
+
+  async function signOut() {
+    await authClient.signOut();
+    router.replace("/login");
+    router.refresh();
+  }
 
   return (
     <div className="app-shell">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} context={context} onSelectMedia={selectMedia} switchingMediaId={switchingMediaId} />
       <main className="main-content">
         <header className="topbar">
           <div className="page-intro">
             <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="باز کردن منو"><Menu size={21} /></button>
-            <div><span>یکشنبه، ۵ مهر ۱۴۰۵</span><h1>صبح بخیر، سارا</h1></div>
+            <div><span>یکشنبه، ۵ مهر ۱۴۰۵</span><h1>صبح بخیر، {firstName}</h1></div>
           </div>
           <div className="topbar-actions">
             <label className="search-box"><Search size={18} /><input aria-label="جست‌وجو" placeholder="جست‌وجوی خبر، منبع یا عملیات…" /><kbd>⌘ K</kbd></label>
             <button className="icon-button notification-button" aria-label="اعلان‌ها"><Bell size={19} /><span>۳</span></button>
             <button className="primary-button"><Plus size={18} />خبر جدید</button>
-            <button className="profile-button"><span>سا</span><div><b>سارا احمدی</b><small>سردبیر ارشد</small></div><ChevronDown size={15} /></button>
+            <div className="profile-wrap">
+              <button className="profile-button" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen}>
+                <span>{initials}</span><div><b>{context.user.name}</b><small>{roleLabels[context.activeMedia.role]}</small></div><ChevronDown size={15} />
+              </button>
+              {profileOpen ? (
+                <div className="profile-menu">
+                  <div><b>{context.user.name}</b><span dir="ltr">{context.user.email}</span></div>
+                  <button onClick={signOut}><LogOut size={15} />خروج امن از حساب</button>
+                </div>
+              ) : null}
+            </div>
           </div>
         </header>
 

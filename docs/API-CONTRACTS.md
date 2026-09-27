@@ -1,6 +1,32 @@
 # قراردادهای یکپارچه‌سازی
 
-وضعیت: skeleton مفهومی؛ قرارداد اجرایی پس از تأیید داشبورد و انتخاب stack هسته نهایی می‌شود.
+وضعیت: اصول adapterها مفهومی‌اند؛ envelope عمومی و endpointهای پایهٔ `v1` اجرایی شده‌اند.
+
+## API هستهٔ فعال
+
+تمام پاسخ‌ها `cache-control: no-store` و header به نام `x-request-id` دارند. شناسهٔ ورودی فقط با الگوی محدود پذیرفته می‌شود و در غیر این صورت سرور UUID تازه تولید می‌کند.
+
+```json
+{
+  "contractVersion": "1",
+  "data": {},
+  "meta": { "correlationId": "..." }
+}
+```
+
+خطا:
+
+```json
+{
+  "contractVersion": "1",
+  "error": { "code": "FORBIDDEN", "message": "..." },
+  "meta": { "correlationId": "..." }
+}
+```
+
+- `GET /api/v1/context`: هویت، رسانه‌های قابل دسترس و رسانهٔ فعال؛ نیازمند نشست معتبر.
+- `POST /api/v1/media/select`: بدنهٔ strict به شکل `{ "mediaId": "..." }`؛ عضویت در سرور بررسی و تغییر موفق audit می‌شود.
+- endpointهای Better Auth زیر `/api/auth/*` قرار دارند؛ ثبت‌نام عمومی و ساخت Media توسط کاربر عادی غیرفعال است.
 
 ## اصول مشترک envelope
 
@@ -47,4 +73,3 @@ queued → running → succeeded
                  ↘ failed → retrying → succeeded|dead
 queued|running → cancelled
 ```
-

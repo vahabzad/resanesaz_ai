@@ -4,7 +4,7 @@
 
 ## مرحلهٔ فعال
 
-`فاز ۱ — پایهٔ محصول و اولین vertical slice واقعی`
+`فاز ۲ — دریافت خبر و کراولر`
 
 ## آنچه انجام شده
 
@@ -18,6 +18,14 @@
 - صفحه در اندازهٔ دسکتاپ و موبایل بازبینی شد؛ TypeScript، lint و build production بدون خطا هستند.
 - مالک محصول در 2026-09-27 جهت بصری، چگالی اطلاعات و تجربهٔ نسخهٔ اول داشبورد را به‌طور کامل تأیید کرد.
 - Gate طراحی فاز ۰ بسته شد؛ داشبورد موجود مبنای Design System و صفحات بعدی است.
+- ADR انتخاب stack پایه ثبت شد: Next.js modular monolith، Better Auth، Drizzle و PostgreSQL با PGlite برای توسعهٔ محلی.
+- ورود واقعی با نشست دیتابیسی، مدل Media/Membership و شش نقش owner/admin/editor/journalist/publisher/viewer پیاده‌سازی شد.
+- انتخاب Media در سرور با کنترل عضویت enforce می‌شود و تغییر رسانه Audit Event تولید می‌کند.
+- dashboard shell هویت، نقش و رسانهٔ واقعی را نمایش می‌دهد و خروج امن دارد؛ ویجت‌های عملیاتی هنوز Mock هستند.
+- API نسخهٔ `v1` با envelope ثابت، validation، correlation ID، خطاهای پالایش‌شده و `no-store` آغاز شد.
+- migration و seed تکرارپذیر برای دو رسانهٔ نمونه آماده است؛ PostgreSQL production-like در Compose و PGlite محلی پشتیبانی می‌شوند.
+- ۸ تست واحد برای ماتریس مجوزها و قرارداد پاسخ پاس می‌شوند؛ smoke test واقعی نیز ورود ۲۰۰، context ۲۰۰، تغییر tenant مجاز ۲۰۰، tenant غیرمجاز ۴۰۳ و نشست ناشناس ۴۰۱ را تأیید کرد.
+- Gate فاز ۱ بسته شد.
 
 ## تصمیم‌های تثبیت‌شده
 
@@ -35,19 +43,21 @@
 - شبکه‌های اجتماعی نسخهٔ اول هنوز انتخاب نشده‌اند؛ Telegram محتمل است ولی قطعی نیست.
 - مدل تأیید انتشار (کاملاً دستی، نیمه‌خودکار یا خودکار) باید در طراحی جریان‌ها قابل تنظیم باشد.
 - ساختار استقرار (محلی، سرور اختصاصی یا SaaS) هنوز تصمیم نهایی ندارد.
-- روش هویت کاربران و سازمان‌ها هنوز انتخاب نشده است.
+- سیاست دعوت کاربر، بازیابی رمز عبور و MFA پیش از عرضه باید طراحی شود.
+- PostgreSQL خارجی هنوز در محیط deployment واقعی provision نشده است؛ Compose فقط مسیر production-like محلی است.
+- `npm audit` یک advisory سطح moderate در زنجیرهٔ dev-only ابزار migration (`drizzle-kit` → `@esbuild-kit`) گزارش می‌کند؛ exploit مربوط به dev server قدیمی esbuild است. downgrade شکستهٔ پیشنهادی npm اعمال نشده و باید با انتشار upstream دوباره بررسی شود.
 
 ## قدم بعدی دقیق
 
-اولین vertical slice واقعی را طراحی و اجرا کن: پایهٔ هسته شامل Media، User، Membership و Role به‌همراه shell واقعی داشبورد و قراردادهای API. پیش از کدنویسی، انتخاب stack ذخیره‌سازی، auth و مرز دقیق این slice در یک ADR ثبت شود.
+vertical slice فاز ۲ را بساز: ابتدا مدل‌های Source، Crawler Definition/Version، Crawl Run و Raw Article و قرارداد adapter را تثبیت کن؛ سپس یک منبع واقعی را از طریق adapter محدودشده وارد Inbox همان Media کن. UI صفحهٔ «منابع و کراولرها» و «اخبار ورودی» هم‌زمان با endpointهای tenant-scoped توسعه یابد.
 
-## معیار پایان فاز ۱
+## معیار پایان فاز ۲
 
-- کاربر مجاز بتواند وارد سیستم شود و یک Media را انتخاب کند.
-- عضویت و نقش کاربر در تمام endpointهای واقعی enforce شود.
-- dashboard shell از هویت و Media واقعی استفاده کند، حتی اگر ویجت‌های عملیاتی هنوز Mock باشند.
-- قرارداد خطا، validation، correlation و Audit Event پایه پیاده‌سازی و تست شده باشد.
-- مسیر migration از Mock به دادهٔ واقعی برای ویجت‌های داشبورد روشن باشد.
+- Source فقط در Media خودش دیده و اجرا شود.
+- حداقل یک منبع واقعی از طریق adapter وارد Raw Article شود.
+- deduplication، timeout، محدودیت اندازه و quarantine ورودی نامعتبر تست شده باشد.
+- Crawl Run و هر Raw Article با correlation و provenance قابل ردیابی باشند.
+- UI منبع، سلامت اجرا و Inbox از API واقعی تغذیه شود.
 
 ## دستور ادامه در یک چت جدید
 
