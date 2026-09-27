@@ -1,0 +1,15 @@
+{
+  "name": "media-command-center",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=@media/dashboard",
+    "build": "npm run build --workspace=@media/dashboard",
+    "lint": "npm run lint --workspace=@media/dashboard",
+    "typecheck": "npm run typecheck --workspace=@media/dashboard"
+  }
+}
+
