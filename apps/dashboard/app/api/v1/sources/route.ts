@@ -3,6 +3,7 @@ import { apiError, apiSuccess, correlationId } from "@/lib/api-response";
 import { getDashboardContext } from "@/lib/server/context";
 import { mediaRoles } from "@/lib/server/permissions";
 import { createSource, getSourcesWorkspace } from "@/lib/server/sources";
+import { enqueueSourceRun } from "@/lib/server/crawl-jobs";
 import { UnsafeSourceUrlError } from "@/lib/server/url-safety";
 
 const createSchema = z.object({
@@ -41,7 +42,14 @@ export async function POST(request: Request) {
       correlationId: requestId,
       ...parsed.data,
     });
-    return apiSuccess({ sourceId }, requestId, 201);
+    const run = await enqueueSourceRun({
+      mediaId: context.activeMedia.id,
+      sourceId,
+      actorUserId: context.user.id,
+      correlationId: `${requestId}:initial`,
+      trigger: "manual",
+    });
+    return apiSuccess({ sourceId, run }, requestId, 201);
   } catch (error) {
     if (error instanceof UnsafeSourceUrlError) return apiError("INVALID_INPUT", "آدرس منبع عمومی و امن نیست.", requestId, 400);
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";

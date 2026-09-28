@@ -413,7 +413,7 @@ export function Dashboard({
           </div>
         </header>
 
-        {view === "sources" && sourcesWorkspace ? <SourcesView workspace={sourcesWorkspace} /> : view === "inbox" && inboxWorkspace ? <InboxView workspace={inboxWorkspace} /> : <div className="dashboard-content">
+        {view === "sources" && sourcesWorkspace ? <SourcesView workspace={sourcesWorkspace} role={context.activeMedia.role} /> : view === "inbox" && inboxWorkspace ? <InboxView workspace={inboxWorkspace} /> : <div className="dashboard-content">
           <section className="attention-strip">
             <div className="attention-icon"><Zap size={20} fill="currentColor" /></div>
             <div><b>سه تصمیم در انتظار شماست</b><span>یک خبر فوری، یک خطای انتشار و یک درخواست تأیید دسترسی</span></div>

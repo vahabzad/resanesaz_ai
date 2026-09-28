@@ -2,15 +2,59 @@ import "server-only";
 
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lt } from "drizzle-orm";
-import { crawlerDefinition, crawlerVersion, crawlRun, rawArticle, source } from "@/db/schema";
+import { crawlerDefinition, crawlerVersion, crawlRun, crawlRunEvent, rawArticle, source } from "@/db/schema";
 import { isSourceDue } from "@/lib/crawl-schedule";
 import { recordAuditEvent } from "@/lib/server/audit";
 import { db } from "@/lib/server/database";
 import { CrawlerGeneratorError, crawlerGeneratorSiteId, runGeneratedCrawler } from "@/lib/server/crawler-generator-adapter";
+import { crawlerGeneratorExecutionEnabled } from "@/lib/server/crawler-execution-policy";
 import { parseRssFeed } from "@/lib/server/rss-adapter";
 import { assertPublicHttpsUrl, fetchPublicXml, UnsafeSourceUrlError } from "@/lib/server/url-safety";
 
 type CrawlTrigger = "manual" | "schedule";
+const activeRunControllers = new Map<string, AbortController>();
+
+async function appendRunEvent(mediaId: string, runId: string, event: Record<string, unknown>) {
+  if (typeof event.message !== "string" || !event.message.trim()) return;
+  const sequence = Number(event.sequence);
+  try {
+    await db.insert(crawlRunEvent).values({
+      id: `crawl_event_${randomUUID()}`,
+      mediaId,
+      runId,
+      sequence: Number.isSafeInteger(sequence) && sequence >= 0 ? sequence : 0,
+      stage: typeof event.stage === "string" ? event.stage.slice(0, 120) : "crawler",
+      status: typeof event.status === "string" ? event.status.slice(0, 40) : "progress",
+      level: typeof event.level === "string" ? event.level.slice(0, 20) : "info",
+      message: event.message.trim().slice(0, 2_000),
+    });
+  } catch {
+    // Progress persistence must never turn an otherwise healthy crawl into a failure.
+  }
+}
+
+async function currentRunState(mediaId: string, runId: string) {
+  const [current] = await db
+    .select({ status: crawlRun.status, errorCode: crawlRun.errorCode })
+    .from(crawlRun)
+    .where(and(eq(crawlRun.id, runId), eq(crawlRun.mediaId, mediaId)))
+    .limit(1);
+  return current ?? null;
+}
+
+export async function cancelActiveSourceRuns(mediaId: string, sourceId: string) {
+  const finishedAt = new Date();
+  const cancelled = await db
+    .update(crawlRun)
+    .set({ status: "failed", errorCode: "USER_CANCELLED", finishedAt })
+    .where(and(eq(crawlRun.mediaId, mediaId), eq(crawlRun.sourceId, sourceId), inArray(crawlRun.status, ["queued", "running"])))
+    .returning();
+  for (const run of cancelled) {
+    await appendRunEvent(mediaId, run.id, { stage: "worker", status: "failed", level: "warn", message: "اجرا با درخواست کاربر متوقف شد." });
+    activeRunControllers.get(run.id)?.abort(new Error("USER_CANCELLED"));
+  }
+  return cancelled.length;
+}
 
 function runErrorCode(error: unknown) {
   if (error instanceof UnsafeSourceUrlError) return "UNSAFE_SOURCE_URL";
@@ -80,6 +124,8 @@ export async function enqueueSourceRun(input: {
     metadata: { sourceId: input.sourceId, trigger: input.trigger },
   });
 
+  await appendRunEvent(input.mediaId, runId, { stage: "queue", status: "queued", message: "درخواست دریافت شد و در صف worker قرار گرفت." });
+
   return { runId, status: "queued" as const, accepted: true };
 }
 
@@ -101,11 +147,25 @@ async function claimNextRun() {
 }
 
 async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof claimNextRun>>>) {
+  const controller = new AbortController();
+  activeRunControllers.set(run.id, controller);
+  let checkingCancellation = false;
+  const cancellationPoll = setInterval(async () => {
+    if (checkingCancellation || controller.signal.aborted) return;
+    checkingCancellation = true;
+    try {
+      const current = await currentRunState(run.mediaId, run.id);
+      if (!current || current.status !== "running") controller.abort(new Error(current?.errorCode ?? "RUN_CANCELLED"));
+    } finally {
+      checkingCancellation = false;
+    }
+  }, 1_000);
   try {
+    await appendRunEvent(run.mediaId, run.id, { stage: "worker", status: "started", message: "worker اجرای منبع را آغاز کرد." });
     const configuration = await activeCrawler(run.mediaId, run.sourceId);
     if (!configuration?.enabled) throw new Error("SOURCE_DISABLED");
     const generated = configuration.adapterKey === "crawler-generator"
-      ? await runGeneratedCrawler(configuration.url, crawlerGeneratorSiteId(configuration.url))
+      ? await runGeneratedCrawler(configuration.url, crawlerGeneratorSiteId(configuration.url), run.trigger === "manual", controller.signal, (event) => appendRunEvent(run.mediaId, run.id, event))
       : null;
     const rss = configuration.adapterKey === "rss" ? await fetchPublicXml(configuration.url) : null;
     const items = generated ? generated.articles.map((item) => ({ ...item, externalId: null })) : parseRssFeed(rss!.body).map((item) => ({
@@ -168,8 +228,10 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
     const finishedAt = new Date();
     const discoveredCount = generated?.discovered ?? items.length;
     const upstreamFailures = generated?.failed ?? 0;
-    await db.update(crawlRun).set({ status: "succeeded", discoveredCount, insertedCount, duplicateCount, quarantinedCount: quarantinedCount + upstreamFailures, finishedAt })
-      .where(and(eq(crawlRun.id, run.id), eq(crawlRun.mediaId, run.mediaId)));
+    const completed = await db.update(crawlRun).set({ status: "succeeded", discoveredCount, insertedCount, duplicateCount, quarantinedCount: quarantinedCount + upstreamFailures, finishedAt })
+      .where(and(eq(crawlRun.id, run.id), eq(crawlRun.mediaId, run.mediaId), eq(crawlRun.status, "running")))
+      .returning();
+    if (!completed.length) return { status: "failed" as const, runId: run.id, errorCode: "USER_CANCELLED" };
     await db.update(source).set({ status: "active", lastRunAt: finishedAt, lastSuccessAt: finishedAt, lastErrorCode: null, updatedAt: finishedAt })
       .where(and(eq(source.id, run.sourceId), eq(source.mediaId, run.mediaId)));
     await recordAuditEvent({
@@ -181,8 +243,13 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
       correlationId: run.correlationId,
       metadata: { sourceId: run.sourceId, adapterKey: configuration.adapterKey, discoveredCount, insertedCount, duplicateCount, quarantinedCount: quarantinedCount + upstreamFailures },
     });
+    await appendRunEvent(run.mediaId, run.id, { stage: "ingestion", status: "completed", message: `اجرا پایان یافت؛ ${insertedCount} خبر جدید و ${duplicateCount} خبر تکراری ثبت شد.` });
     return { status: "succeeded" as const, runId: run.id };
   } catch (error) {
+    const current = await currentRunState(run.mediaId, run.id);
+    if (!current || current.errorCode === "USER_CANCELLED") {
+      return { status: "failed" as const, runId: run.id, errorCode: "USER_CANCELLED" };
+    }
     const errorCode = runErrorCode(error);
     const finishedAt = new Date();
     await db.update(crawlRun).set({ status: "failed", errorCode, finishedAt }).where(and(eq(crawlRun.id, run.id), eq(crawlRun.mediaId, run.mediaId)));
@@ -196,7 +263,11 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
       correlationId: run.correlationId,
       metadata: { sourceId: run.sourceId, errorCode },
     });
+    await appendRunEvent(run.mediaId, run.id, { stage: "worker", status: "failed", level: "error", message: errorCode === "USER_CANCELLED" ? "اجرا توسط کاربر متوقف شد." : `اجرای منبع با خطای ${errorCode} پایان یافت.` });
     return { status: "failed" as const, runId: run.id, errorCode };
+  } finally {
+    clearInterval(cancellationPoll);
+    activeRunControllers.delete(run.id);
   }
 }
 
@@ -231,11 +302,12 @@ async function failStaleRuns(now = new Date()) {
 
 export async function enqueueDueSourceRuns(now = new Date()) {
   const candidates = await db
-    .select({ id: source.id, mediaId: source.mediaId, scheduleMinutes: source.scheduleMinutes, lastRunAt: source.lastRunAt })
+    .select({ id: source.id, mediaId: source.mediaId, adapterKey: source.adapterKey, scheduleMinutes: source.scheduleMinutes, lastRunAt: source.lastRunAt })
     .from(source)
     .where(eq(source.enabled, true));
   let queued = 0;
   for (const candidate of candidates) {
+    if (candidate.adapterKey === "crawler-generator" && !crawlerGeneratorExecutionEnabled()) continue;
     if (!isSourceDue(candidate.lastRunAt, candidate.scheduleMinutes, now)) continue;
     const result = await enqueueSourceRun({
       mediaId: candidate.mediaId,

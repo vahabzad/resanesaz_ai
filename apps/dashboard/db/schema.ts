@@ -111,6 +111,25 @@ export const crawlRun = pgTable(
   ],
 );
 
+export const crawlRunEvent = pgTable(
+  "crawl_run_event",
+  {
+    id: text("id").primaryKey(),
+    mediaId: text("media_id").notNull().references(() => media.id, { onDelete: "cascade" }),
+    runId: text("run_id").notNull().references(() => crawlRun.id, { onDelete: "cascade" }),
+    sequence: integer("sequence").notNull(),
+    stage: text("stage").notNull(),
+    status: text("status").notNull(),
+    level: text("level").notNull().default("info"),
+    message: text("message").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("crawl_run_event_run_created_idx").on(table.runId, table.createdAt),
+    index("crawl_run_event_media_created_idx").on(table.mediaId, table.createdAt),
+  ],
+);
+
 export const rawArticle = pgTable(
   "raw_article",
   {

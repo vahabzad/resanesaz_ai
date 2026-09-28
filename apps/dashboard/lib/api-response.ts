@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-export type ApiErrorCode = "UNAUTHENTICATED" | "FORBIDDEN" | "INVALID_INPUT" | "INTERNAL_ERROR";
+export type ApiErrorCode = "UNAUTHENTICATED" | "FORBIDDEN" | "INVALID_INPUT" | "CRAWLER_EXECUTION_DISABLED" | "INTERNAL_ERROR";
 
 export function correlationId(request: Request) {
   const incoming = request.headers.get("x-request-id");

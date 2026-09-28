@@ -7,6 +7,7 @@ export type SourceSummary = {
   adapterKey: "crawler-generator" | "rss";
   status: SourceStatus;
   enabled: boolean;
+  executionBlocked: boolean;
   scheduleMinutes: number;
   lastRunAt: string | null;
   lastSuccessAt: string | null;
@@ -39,4 +40,22 @@ export type SourcesWorkspace = {
     failed: number;
     articles: number;
   };
+};
+
+export type CrawlRunLiveEvent = {
+  id: string;
+  sequence: number;
+  stage: string;
+  status: string;
+  level: string;
+  message: string;
+  createdAt: string;
+};
+
+export type CrawlRunLiveLog = {
+  runId: string;
+  sourceName: string;
+  status: CrawlRunSummary["status"];
+  errorCode: string | null;
+  events: CrawlRunLiveEvent[];
 };

@@ -1,7 +1,7 @@
 import "server-only";
 
 import { z } from "zod";
-import { CrawlerGeneratorError, crawlerGeneratorSiteId, finalNdjsonEvent } from "@/lib/crawler-generator-contract";
+import { CrawlerGeneratorError, crawlerGeneratorSiteId } from "@/lib/crawler-generator-contract";
 
 export { CrawlerGeneratorError, crawlerGeneratorSiteId } from "@/lib/crawler-generator-contract";
 
@@ -72,16 +72,49 @@ async function jsonRequest(path: string) {
   catch { throw new CrawlerGeneratorError("CRAWLER_INVALID_RESPONSE", "CrawlerGenerator returned invalid JSON."); }
 }
 
-async function action(path: string, expectedType: string, body?: unknown, timeoutMs = 60 * 60_000) {
+type ProgressHandler = (event: Record<string, unknown>) => Promise<void> | void;
+
+async function action(path: string, expectedType: string, body?: unknown, timeoutMs = 60 * 60_000, externalSignal?: AbortSignal, onProgress?: ProgressHandler): Promise<Record<string, unknown>> {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
   const response = await serviceFetch(endpoint(path), {
     method: "POST",
     headers: { accept: "application/x-ndjson", ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: externalSignal ? AbortSignal.any([timeoutSignal, externalSignal]) : timeoutSignal,
   });
-  const text = await boundedText(response);
+  if (!response.body) throw new CrawlerGeneratorError("CRAWLER_INVALID_RESPONSE", "CrawlerGenerator returned no stream.");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let receivedBytes = 0;
+  const final: { value: Record<string, unknown> | null } = { value: null };
+  const consume = async (line: string) => {
+    if (!line.trim()) return;
+    let event: Record<string, unknown>;
+    try { event = JSON.parse(line) as Record<string, unknown>; }
+    catch { throw new CrawlerGeneratorError("CRAWLER_INVALID_RESPONSE", "CrawlerGenerator returned invalid NDJSON."); }
+    const progress = event.type === "log" && event.entry && typeof event.entry === "object"
+      ? event.entry as Record<string, unknown>
+      : event;
+    await onProgress?.(progress);
+    if (event.type === "failure") throw new CrawlerGeneratorError("CRAWLER_REMOTE_FAILED", String(event.message ?? "CrawlerGenerator failed."));
+    if (event.type === expectedType) final.value = event;
+  };
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    receivedBytes += value.byteLength;
+    if (receivedBytes > 8_000_000) throw new CrawlerGeneratorError("CRAWLER_RESPONSE_TOO_LARGE", "CrawlerGenerator response exceeded its limit.");
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) await consume(line);
+  }
+  buffer += decoder.decode();
+  await consume(buffer);
   if (!response.ok) throw new CrawlerGeneratorError("CRAWLER_SERVICE_FAILED", `CrawlerGenerator returned ${response.status}.`);
-  return finalNdjsonEvent(text, expectedType);
+  if (!final.value) throw new CrawlerGeneratorError("CRAWLER_INVALID_RESPONSE", `CrawlerGenerator did not return ${expectedType}.`);
+  return final.value;
 }
 
 async function getSite(siteId: string) {
@@ -92,18 +125,18 @@ async function getSite(siteId: string) {
   }
 }
 
-export async function ensureGeneratedCrawler(listingUrl: string, siteId = crawlerGeneratorSiteId(listingUrl)) {
+export async function ensureGeneratedCrawler(listingUrl: string, siteId = crawlerGeneratorSiteId(listingUrl), signal?: AbortSignal, onProgress?: ProgressHandler) {
   const existing = await getSite(siteId);
   if (existing) return existing;
-  await action("/api/generate", "result", { listingUrl });
+  await action("/api/generate", "result", { listingUrl }, 60 * 60_000, signal, onProgress);
   const generated = await getSite(siteId);
   if (!generated) throw new CrawlerGeneratorError("CRAWLER_GENERATION_FAILED", "Generated crawler was not published.");
   return generated;
 }
 
-export async function runGeneratedCrawler(listingUrl: string, siteId = crawlerGeneratorSiteId(listingUrl)) {
-  const site = await ensureGeneratedCrawler(listingUrl, siteId);
-  const result = await action(`/api/sites/${encodeURIComponent(siteId)}/run`, "run_result");
+export async function runGeneratedCrawler(listingUrl: string, siteId = crawlerGeneratorSiteId(listingUrl), selfHeal = true, signal?: AbortSignal, onProgress?: ProgressHandler) {
+  const site = await ensureGeneratedCrawler(listingUrl, siteId, signal, onProgress);
+  const result = await action(`/api/sites/${encodeURIComponent(siteId)}/run`, "run_result", { selfHeal }, 60 * 60_000, signal, onProgress);
   const collection = collectionSchema.parse(await jsonRequest(`/api/sites/${encodeURIComponent(siteId)}/articles`));
   if (!collection.outputFile) throw new CrawlerGeneratorError("CRAWLER_EMPTY_OUTPUT", "CrawlerGenerator returned no article output.");
   const articles: CrawlerGeneratorArticle[] = [];
