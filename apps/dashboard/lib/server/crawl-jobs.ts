@@ -6,6 +6,7 @@ import { crawlerDefinition, crawlerVersion, crawlRun, rawArticle, source } from 
 import { isSourceDue } from "@/lib/crawl-schedule";
 import { recordAuditEvent } from "@/lib/server/audit";
 import { db } from "@/lib/server/database";
+import { CrawlerGeneratorError, crawlerGeneratorSiteId, runGeneratedCrawler } from "@/lib/server/crawler-generator-adapter";
 import { parseRssFeed } from "@/lib/server/rss-adapter";
 import { assertPublicHttpsUrl, fetchPublicXml, UnsafeSourceUrlError } from "@/lib/server/url-safety";
 
@@ -13,6 +14,7 @@ type CrawlTrigger = "manual" | "schedule";
 
 function runErrorCode(error: unknown) {
   if (error instanceof UnsafeSourceUrlError) return "UNSAFE_SOURCE_URL";
+  if (error instanceof CrawlerGeneratorError) return error.code;
   if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return "UPSTREAM_TIMEOUT";
   if (error instanceof Error && /^(UPSTREAM_\d{3}|RESPONSE_TOO_LARGE|REDIRECT_LIMIT|EMPTY_RESPONSE)$/.test(error.message)) return error.message;
   return "ADAPTER_FAILED";
@@ -24,7 +26,9 @@ async function activeCrawler(mediaId: string, sourceId: string) {
       sourceId: source.id,
       url: source.url,
       enabled: source.enabled,
+      adapterKey: source.adapterKey,
       versionId: crawlerVersion.id,
+      config: crawlerVersion.config,
     })
     .from(source)
     .innerJoin(crawlerDefinition, and(eq(crawlerDefinition.sourceId, source.id), eq(crawlerDefinition.mediaId, source.mediaId)))
@@ -100,8 +104,23 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
   try {
     const configuration = await activeCrawler(run.mediaId, run.sourceId);
     if (!configuration?.enabled) throw new Error("SOURCE_DISABLED");
-    const { body, finalUrl } = await fetchPublicXml(configuration.url);
-    const items = parseRssFeed(body);
+    const generated = configuration.adapterKey === "crawler-generator"
+      ? await runGeneratedCrawler(configuration.url, crawlerGeneratorSiteId(configuration.url))
+      : null;
+    const rss = configuration.adapterKey === "rss" ? await fetchPublicXml(configuration.url) : null;
+    const items = generated ? generated.articles.map((item) => ({ ...item, externalId: null })) : parseRssFeed(rss!.body).map((item) => ({
+      externalId: item.externalId,
+      url: item.canonicalUrl,
+      title: item.title,
+      summary: item.summary,
+      publishedAt: item.publishedAt?.toISOString() ?? null,
+      content: null,
+      contentHtml: null,
+      imageUrl: null,
+      categories: [] as string[],
+      tags: [] as string[],
+      author: null,
+    }));
     let insertedCount = 0;
     let duplicateCount = 0;
     let quarantinedCount = 0;
@@ -110,35 +129,46 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
       let status = "new";
       let quarantineReason: string | null = null;
       try {
-        await assertPublicHttpsUrl(item.canonicalUrl);
+        await assertPublicHttpsUrl(item.url);
       } catch {
         status = "quarantined";
         quarantineReason = "UNSAFE_ARTICLE_URL";
         quarantinedCount += 1;
       }
 
-      const contentHash = createHash("sha256").update(`${item.canonicalUrl}\n${item.title}`).digest("hex");
+      const contentHash = createHash("sha256").update(`${item.url}\n${item.title}`).digest("hex");
+      const publishedAt = item.publishedAt && !Number.isNaN(Date.parse(item.publishedAt)) ? new Date(item.publishedAt) : null;
       const inserted = await db.insert(rawArticle).values({
         id: `raw_${randomUUID()}`,
         mediaId: run.mediaId,
         sourceId: run.sourceId,
         crawlRunId: run.id,
         externalId: item.externalId,
-        canonicalUrl: item.canonicalUrl,
+        canonicalUrl: item.url,
         title: item.title,
         summary: item.summary,
-        publishedAt: item.publishedAt,
+        content: item.content,
+        contentHtml: item.contentHtml,
+        imageUrl: item.imageUrl,
+        categories: item.categories,
+        tags: item.tags,
+        author: item.author,
+        publishedAt,
         contentHash,
         status,
         quarantineReason,
-        provenance: { adapterKey: "rss", feedUrl: finalUrl, contractVersion: "1", crawlRunId: run.id },
+        provenance: configuration.adapterKey === "crawler-generator"
+          ? { adapterKey: "crawler-generator", siteId: generated!.site.id, crawlerVersion: generated!.site.version, outputFile: generated!.outputFile, contractVersion: "1", crawlRunId: run.id }
+          : { adapterKey: "rss", feedUrl: rss!.finalUrl, contractVersion: "1", crawlRunId: run.id },
       }).onConflictDoNothing().returning();
       if (inserted.length) insertedCount += 1;
       else duplicateCount += 1;
     }
 
     const finishedAt = new Date();
-    await db.update(crawlRun).set({ status: "succeeded", discoveredCount: items.length, insertedCount, duplicateCount, quarantinedCount, finishedAt })
+    const discoveredCount = generated?.discovered ?? items.length;
+    const upstreamFailures = generated?.failed ?? 0;
+    await db.update(crawlRun).set({ status: "succeeded", discoveredCount, insertedCount, duplicateCount, quarantinedCount: quarantinedCount + upstreamFailures, finishedAt })
       .where(and(eq(crawlRun.id, run.id), eq(crawlRun.mediaId, run.mediaId)));
     await db.update(source).set({ status: "active", lastRunAt: finishedAt, lastSuccessAt: finishedAt, lastErrorCode: null, updatedAt: finishedAt })
       .where(and(eq(source.id, run.sourceId), eq(source.mediaId, run.mediaId)));
@@ -149,7 +179,7 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
       targetType: "crawl_run",
       targetId: run.id,
       correlationId: run.correlationId,
-      metadata: { sourceId: run.sourceId, discoveredCount: items.length, insertedCount, duplicateCount, quarantinedCount },
+      metadata: { sourceId: run.sourceId, adapterKey: configuration.adapterKey, discoveredCount, insertedCount, duplicateCount, quarantinedCount: quarantinedCount + upstreamFailures },
     });
     return { status: "succeeded" as const, runId: run.id };
   } catch (error) {
@@ -171,7 +201,11 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
 }
 
 async function failStaleRuns(now = new Date()) {
-  const cutoff = new Date(now.getTime() - 15 * 60_000);
+  const configuredStaleAfterMs = Number(process.env.CRAWL_WORKER_STALE_MS ?? 90 * 60_000);
+  const staleAfterMs = Number.isFinite(configuredStaleAfterMs) && configuredStaleAfterMs >= 60_000
+    ? configuredStaleAfterMs
+    : 90 * 60_000;
+  const cutoff = new Date(now.getTime() - staleAfterMs);
   const staleRuns = await db
     .update(crawlRun)
     .set({ status: "failed", errorCode: "WORKER_STALLED", finishedAt: now })

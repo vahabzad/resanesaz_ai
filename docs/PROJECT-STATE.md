@@ -27,15 +27,18 @@
 - ۸ تست واحد برای ماتریس مجوزها و قرارداد پاسخ پاس می‌شوند؛ smoke test واقعی نیز ورود ۲۰۰، context ۲۰۰، تغییر tenant مجاز ۲۰۰، tenant غیرمجاز ۴۰۳ و نشست ناشناس ۴۰۱ را تأیید کرد.
 - Gate فاز ۱ بسته شد.
 - فاز ۲ با مدل‌های Source، Crawler Definition/Version، Crawl Run و Raw Article آغاز شد؛ تمام مدل‌ها tenant-scoped هستند.
-- ADR مرز ingestion ثبت شد و RSS به‌عنوان اولین adapter قرارداد `v1` پیاده‌سازی شد.
-- دریافت RSS دارای HTTPS-only، DNS/IP revalidation، جلوگیری از SSRF، redirect محدود، timeout ده‌ثانیه و سقف پاسخ دو مگابایت است.
+- ADR مرز ingestion ثبت شد؛ CrawlerGenerator بازوی اصلی دریافت از صفحهٔ سایت و RSS یک adapter فرعی برای منابع صریحاً RSS است.
+- دریافت مستقیم RSS دارای HTTPS-only، DNS/IP revalidation، جلوگیری از SSRF، redirect محدود، timeout ده‌ثانیه و سقف پاسخ دو مگابایت است.
 - صفحات واقعی «منابع و کراولرها» و «اخبار ورودی» با Design System تأییدشده اضافه شدند.
 - RSS ایرنا به‌صورت واقعی اجرا شد: ۳۰ خبر وارد Inbox شد و اجرای دوم هر ۳۰ مورد را duplicate تشخیص داد.
 - جداسازی tenant در smoke test تأیید شد: رسانهٔ دوم از API منابع و Inbox هیچ داده‌ای از رسانهٔ اول دریافت نکرد.
 - تست‌های خودکار به ۱۰ مورد رسید و parsing RSS و محدوده‌های IP خصوصی/رزروشده را نیز پوشش می‌دهد.
 - اجرای Crawl از request جدا شد: API با `202` یک run صف‌بندی می‌کند، worker وضعیت‌های `queued/running` را مدیریت می‌کند و اجرای هم‌زمان تکراری هر Source با partial unique index بسته شده است.
-- scheduler بر اساس `scheduleMinutes` فعال شد؛ worker مستقل برای PostgreSQL و حالت inline برای PGlite محلی آماده است و run رهاشده پس از ۱۵ دقیقه با `WORKER_STALLED` آزاد می‌شود.
-- UI منابع وضعیت صف/اجرا را polling می‌کند و trigger دستی یا زمان‌بندی‌شده را نشان می‌دهد؛ تست‌های خودکار به ۱۲ مورد رسید.
+- scheduler بر اساس `scheduleMinutes` فعال شد؛ worker مستقل برای PostgreSQL و حالت inline برای PGlite محلی آماده است و run رهاشده پس از ۹۰ دقیقه با `WORKER_STALLED` آزاد می‌شود.
+- UI منابع وضعیت صف/اجرا را polling می‌کند و trigger دستی یا زمان‌بندی‌شده را نشان می‌دهد.
+- adapter واقعی CrawlerGenerator به‌صورت server-to-server متصل شد: crawler دامنه را می‌یابد یا می‌سازد، اجرای کامل را از API همان بازو انجام می‌دهد و متن، HTML، تصویر، نویسنده، دسته‌ها و برچسب‌ها را همراه provenance وارد Raw Article می‌کند.
+- فرم پنل به‌طور صریح صفحهٔ فهرست سایت می‌گیرد و منبع تازه را با `crawler-generator` می‌سازد؛ UI پروژهٔ مرجع وارد محصول نشده است.
+- قرارداد NDJSON، slug سازگار با بازو و failure پالایش‌شده پوشش تست دارند؛ مجموع تست‌های خودکار به ۱۵ مورد رسید.
 
 ## تصمیم‌های تثبیت‌شده
 
@@ -59,7 +62,7 @@
 
 ## قدم بعدی دقیق
 
-CrawlerGenerator را پشت قرارداد adapter `v1` برای منابعی که RSS کافی نیست متصل کن. سپس جزئیات Raw Article، quarantine و retry قابل اقدام را در UI تکمیل کن.
+جزئیات Raw Article، نمایش امن محتوای HTML، quarantine و retry قابل اقدام را در UI تکمیل کن.
 
 ## معیار پایان فاز ۲
 

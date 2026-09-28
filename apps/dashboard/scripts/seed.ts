@@ -43,8 +43,7 @@ async function seed() {
     }
 
     const sourceSeeds = [
-      { id: "source_irna_rss", name: "خبرگزاری ایرنا", url: "https://www.irna.ir/rss", scheduleMinutes: 10 },
-      { id: "source_isna_rss", name: "خبرگزاری ایسنا", url: "https://www.isna.ir/rss", scheduleMinutes: 15 },
+      { id: "source_fars_website", name: "خبرگزاری فارس", url: "https://farsnews.ir/showcase", scheduleMinutes: 15 },
     ];
 
     for (const item of sourceSeeds) {
@@ -52,7 +51,7 @@ async function seed() {
       await cliDb.insert(schema.source).values({
         ...item,
         mediaId: mediaSeeds[0].id,
-        adapterKey: "rss",
+        adapterKey: "crawler-generator",
         status: "active",
         enabled: true,
         createdBy: seedUser.id,
@@ -61,7 +60,7 @@ async function seed() {
         id: definitionId,
         mediaId: mediaSeeds[0].id,
         sourceId: item.id,
-        adapterKey: "rss",
+        adapterKey: "crawler-generator",
       }).onConflictDoNothing();
       await cliDb.insert(schema.crawlerVersion).values({
         id: `crawler_version_${item.id}_1`,
@@ -69,7 +68,7 @@ async function seed() {
         definitionId,
         version: 1,
         status: "active",
-        config: { feedUrl: item.url, contractVersion: "1" },
+        config: { listingUrl: item.url, contractVersion: "1", generatorContract: "CrawlerGenerator/api-v1" },
         createdBy: seedUser.id,
       }).onConflictDoNothing();
     }

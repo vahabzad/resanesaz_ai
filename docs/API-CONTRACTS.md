@@ -27,8 +27,8 @@
 - `GET /api/v1/context`: هویت، رسانه‌های قابل دسترس و رسانهٔ فعال؛ نیازمند نشست معتبر.
 - `POST /api/v1/media/select`: بدنهٔ strict به شکل `{ "mediaId": "..." }`؛ عضویت در سرور بررسی و تغییر موفق audit می‌شود.
 - `GET /api/v1/sources`: منابع، سلامت، شمار خبرها و اجراهای اخیر Media فعال.
-- `POST /api/v1/sources`: ساخت Source و نسخهٔ اولیهٔ crawler برای یک RSS عمومی امن.
-- `POST /api/v1/sources/:sourceId/run`: اجرای نسخهٔ فعال crawler با کنترل مجوز و مالکیت Media؛ خروجی شامل discovered، inserted، duplicate و quarantined است.
+- `POST /api/v1/sources`: ساخت Source برای صفحهٔ فهرست سایت با `adapterKey=crawler-generator` (پیش‌فرض) یا RSS اختیاری.
+- `POST /api/v1/sources/:sourceId/run`: صف‌بندی اجرای نسخهٔ فعال crawler با کنترل مجوز و مالکیت Media؛ پاسخ `202` و وضعیت `queued` برمی‌گرداند.
 - `GET /api/v1/articles`: آخرین Raw Articleهای Media فعال و آمار Inbox.
 - endpointهای Better Auth زیر `/api/auth/*` قرار دارند؛ ثبت‌نام عمومی و ساخت Media توسط کاربر عادی غیرفعال است.
 
@@ -51,6 +51,8 @@ idempotencyKey
 ورودی مفهومی: Source، نسخهٔ Crawler، محدودیت اجرا و correlation.
 
 خروجی مفهومی: Crawl Run summary به‌همراه مجموعهٔ Raw Article و خطاهای مستقل هر URL. فیلدهای فعلی CrawlerGenerator مانند `title`، `content`، `contentHtml`، `imageUrl`، `categories`، `tags`، `author` و `publishedAt` پایهٔ mapping هستند، نه قرارداد نهایی.
+
+Adapter اجرایی فعلی فقط به‌صورت server-to-server به بازوی CrawlerGenerator متصل می‌شود: اگر crawler آزمایش‌شدهٔ دامنه وجود نداشته باشد آن را با `/api/generate` می‌سازد، سپس نسخهٔ فعال را از `/api/sites/:siteId/run` اجرا و جزئیات کامل هر خبر را از endpointهای articles به Raw Article نگاشت می‌کند. URL سرویس یا خروجی فایل‌محور بازو به مرورگر افشا نمی‌شود.
 
 ## Editorial Adapter
 

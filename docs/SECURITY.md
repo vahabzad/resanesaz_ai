@@ -75,7 +75,8 @@
 - secret و دیتابیس محلی از Git خارج‌اند؛ فقط `.env.example` commit می‌شود.
 - Source فقط HTTPS عمومی را می‌پذیرد؛ hostname در ایجاد و اجرا resolve و تمام IPها در برابر محدوده‌های خصوصی، loopback، link-local و رزروشده بررسی می‌شوند.
 - redirectهای ingestion دستی و محدودند و هر مقصد دوباره اعتبارسنجی می‌شود؛ timeout ده‌ثانیه و سقف پاسخ دو مگابایت اعمال می‌شود.
-- خروجی RSS به DTO حداقلی تبدیل می‌شود، HTML آن trusted نیست و URL مقاله بدون اجرای خودکار نگه‌داری می‌شود.
+- CrawlerGenerator فقط server-to-server فراخوانی می‌شود و API بدون auth آن به مرورگر یا اینترنت عمومی expose نمی‌شود.
+- خروجی صفحهٔ سایت شامل `contentHtml` دادهٔ نامطمئن است؛ در Raw Article ذخیره می‌شود اما پیش از هر preview باید sanitize و در origin/CSP جدا نمایش داده شود.
 - deduplication در دیتابیس با unique index محدودهٔ `mediaId + sourceId + contentHash` enforce می‌شود.
 
 یادداشت وابستگی: در 2026-09-27، audit یک advisory سطح moderate در ابزار migration توسعه (`drizzle-kit` و loader قدیمی esbuild) گزارش کرد. مسیر آسیب‌پذیر dev server در runtime محصول استفاده نمی‌شود. پیشنهاد `npm audit fix --force` به‌دلیل downgrade شکسته اعمال نشد؛ این مورد تا اصلاح upstream باید در هر ارتقا بازبینی شود و ابزار migration نباید روی host عمومی expose شود.

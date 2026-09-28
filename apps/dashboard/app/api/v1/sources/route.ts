@@ -2,13 +2,14 @@ import { z } from "zod";
 import { apiError, apiSuccess, correlationId } from "@/lib/api-response";
 import { getDashboardContext } from "@/lib/server/context";
 import { mediaRoles } from "@/lib/server/permissions";
-import { createRssSource, getSourcesWorkspace } from "@/lib/server/sources";
+import { createSource, getSourcesWorkspace } from "@/lib/server/sources";
 import { UnsafeSourceUrlError } from "@/lib/server/url-safety";
 
 const createSchema = z.object({
   name: z.string().trim().min(2).max(120),
   url: z.url().max(2_048),
   scheduleMinutes: z.number().int().min(5).max(1_440).default(15),
+  adapterKey: z.enum(["crawler-generator", "rss"]).default("crawler-generator"),
 }).strict();
 
 export async function GET(request: Request) {
@@ -34,7 +35,7 @@ export async function POST(request: Request) {
     const parsed = createSchema.safeParse(await request.json().catch(() => null));
     if (!parsed.success) return apiError("INVALID_INPUT", "مشخصات منبع معتبر نیست.", requestId, 400);
 
-    const sourceId = await createRssSource({
+    const sourceId = await createSource({
       mediaId: context.activeMedia.id,
       actorUserId: context.user.id,
       correlationId: requestId,

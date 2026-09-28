@@ -12,7 +12,7 @@
 
 - هسته مالک مدل‌های canonical شامل Source، Crawler Definition، Crawler Version، Crawl Run و Raw Article است.
 - هر رکورد کسب‌وکاری `mediaId` دارد و queryها علاوه بر شناسهٔ رکورد با Media فعال محدود می‌شوند.
-- RSS نخستین adapter با قرارداد نسخهٔ `v1` است؛ CrawlerGenerator در مرحلهٔ بعد پشت همین مرز به‌عنوان adapter/worker اضافه می‌شود.
+- CrawlerGenerator adapter اصلی منابع صفحهٔ سایت در قرارداد `v1` است؛ RSS فقط adapter ساده و اختیاری باقی می‌ماند.
 - recipe یا خروجی بازو مستقیماً مدل canonical یا مجوزهای هسته را تعیین نمی‌کند.
 - دریافت URL فقط با HTTPS عمومی، DNS/IP revalidation، redirect دستی محدود، timeout ده‌ثانیه و سقف پاسخ دو مگابایت انجام می‌شود.
 - Raw Article با hash پایدار در محدودهٔ Media و Source deduplicate و provenance اجرای خود را نگه می‌دارد.
@@ -20,7 +20,7 @@
 
 ## پیامدها
 
-- Inbox می‌تواند پیش از اتصال CrawlerGenerator با دادهٔ واقعی و قرارداد نهایی‌نما توسعه یابد.
+- Inbox خروجی صفحهٔ سایت را با متن، HTML نامطمئن، تصویر، نویسنده، دسته‌ها و برچسب‌های CrawlerGenerator در مدل canonical نگه می‌دارد.
 - یک retry همان feed رکورد تکراری ایجاد نمی‌کند.
 - مسیر RSS و adapterهای بعدی باید از صف و worker مشترک استفاده کنند.
 - URL مقصد مقاله ذخیره می‌شود اما محتوای آن خودکار fetch یا trusted نمی‌شود.

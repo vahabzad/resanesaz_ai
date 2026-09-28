@@ -21,6 +21,7 @@ type CreateSourceInput = {
   url: string;
   scheduleMinutes: number;
   correlationId: string;
+  adapterKey: "crawler-generator" | "rss";
 };
 
 export async function getSourcesWorkspace(mediaId: string): Promise<SourcesWorkspace> {
@@ -72,7 +73,7 @@ export async function getSourcesWorkspace(mediaId: string): Promise<SourcesWorks
 
   const sources = sourceRows.map((row) => ({
     ...row,
-    adapterKey: "rss" as const,
+    adapterKey: row.adapterKey as "crawler-generator" | "rss",
     status: row.status as SourceStatus,
     articleCount: articleCountBySource.get(row.id) ?? 0,
     lastRunAt: row.lastRunAt?.toISOString() ?? null,
@@ -100,7 +101,7 @@ export async function getSourcesWorkspace(mediaId: string): Promise<SourcesWorks
   };
 }
 
-export async function createRssSource(input: CreateSourceInput) {
+export async function createSource(input: CreateSourceInput) {
   const safeUrl = await assertPublicHttpsUrl(input.url);
   const sourceId = `source_${randomUUID()}`;
   const definitionId = `crawler_${randomUUID()}`;
@@ -111,7 +112,7 @@ export async function createRssSource(input: CreateSourceInput) {
       mediaId: input.mediaId,
       name: input.name,
       url: safeUrl.toString(),
-      adapterKey: "rss",
+      adapterKey: input.adapterKey,
       scheduleMinutes: input.scheduleMinutes,
       createdBy: input.actorUserId,
     });
@@ -119,7 +120,7 @@ export async function createRssSource(input: CreateSourceInput) {
       id: definitionId,
       mediaId: input.mediaId,
       sourceId,
-      adapterKey: "rss",
+      adapterKey: input.adapterKey,
     });
     await transaction.insert(crawlerVersion).values({
       id: `crawler_version_${randomUUID()}`,
@@ -127,7 +128,9 @@ export async function createRssSource(input: CreateSourceInput) {
       definitionId,
       version: 1,
       status: "active",
-      config: { feedUrl: safeUrl.toString(), contractVersion: "1" },
+      config: input.adapterKey === "rss"
+        ? { feedUrl: safeUrl.toString(), contractVersion: "1" }
+        : { listingUrl: safeUrl.toString(), contractVersion: "1", generatorContract: "CrawlerGenerator/api-v1" },
       createdBy: input.actorUserId,
     });
   });
@@ -139,7 +142,7 @@ export async function createRssSource(input: CreateSourceInput) {
     targetType: "source",
     targetId: sourceId,
     correlationId: input.correlationId,
-    metadata: { adapterKey: "rss" },
+    metadata: { adapterKey: input.adapterKey },
   });
 
   return sourceId;

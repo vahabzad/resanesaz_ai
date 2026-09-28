@@ -9,6 +9,7 @@ import {
   Database,
   ExternalLink,
   FileInput,
+  Globe2,
   LoaderCircle,
   Play,
   Plus,
@@ -80,13 +81,14 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
       body: JSON.stringify({
         name: form.get("name"),
         url: form.get("url"),
+        adapterKey: "crawler-generator",
         scheduleMinutes: Number(form.get("scheduleMinutes")),
       }),
     });
     const payload = await response.json().catch(() => null);
     if (response.ok) {
       event.currentTarget.reset();
-      setNotice({ tone: "success", text: "منبع RSS با نسخهٔ اولیهٔ کراولر ثبت شد." });
+      setNotice({ tone: "success", text: "منبع سایت ثبت شد؛ CrawlerGenerator در اولین اجرا recipe اختصاصی آن را می‌سازد و آزمایش می‌کند." });
       router.refresh();
     } else {
       setNotice({ tone: "error", text: payload?.error?.message ?? "ثبت منبع ناموفق بود." });
@@ -102,13 +104,13 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
           <h2>نبض منابع خبری، زیر یک نگاه.</h2>
           <p>هر منبع با نسخهٔ مشخص، اجرای قابل ردیابی و مرز امنیتی مستقل وارد اتاق خبر می‌شود.</p>
         </div>
-        <div className="sources-hero-status"><ShieldCheck size={18} /><span><b>ورودی محافظت‌شده</b><small>SSRF Guard · محدودیت ۲MB · Timeout ۱۰s</small></span></div>
+        <div className="sources-hero-status"><ShieldCheck size={18} /><span><b>کراولر اختصاصی هر سایت</b><small>CrawlerGenerator · Recipe نسخه‌دار · اجرای ایزوله</small></span></div>
       </section>
 
       {notice ? <div className={`source-notice ${notice.tone}`}>{notice.tone === "success" ? <Check size={17} /> : <AlertTriangle size={17} />}<span>{notice.text}</span></div> : null}
 
       <section className="source-kpi-grid">
-        <article><span className="source-kpi-icon blue"><Radio size={19} /></span><div><small>کل منابع</small><b>{workspace.stats.total.toLocaleString("fa-IR")}</b><em>RSS فعال در این رسانه</em></div></article>
+        <article><span className="source-kpi-icon blue"><Radio size={19} /></span><div><small>کل منابع</small><b>{workspace.stats.total.toLocaleString("fa-IR")}</b><em>سایت‌ها و ورودی‌های فعال</em></div></article>
         <article><span className="source-kpi-icon green"><Activity size={19} /></span><div><small>منابع پایدار</small><b>{workspace.stats.healthy.toLocaleString("fa-IR")}</b><em>آمادهٔ دریافت خبر</em></div></article>
         <article><span className="source-kpi-icon red"><AlertTriangle size={19} /></span><div><small>نیازمند بررسی</small><b>{workspace.stats.failed.toLocaleString("fa-IR")}</b><em>خطای آخرین اجرا</em></div></article>
         <article><span className="source-kpi-icon violet"><FileInput size={19} /></span><div><small>اخبار دریافت‌شده</small><b>{workspace.stats.articles.toLocaleString("fa-IR")}</b><em>پس از حذف تکراری‌ها</em></div></article>
@@ -122,7 +124,7 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
             <div className="sources-table-body">
               {workspace.sources.map((item) => (
                 <article className="source-row" key={item.id}>
-                  <div className="source-identity"><span><Rss size={18} /></span><div><b>{item.name}</b><a href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).hostname}<ExternalLink size={11} /></a></div></div>
+                  <div className="source-identity"><span>{item.adapterKey === "crawler-generator" ? <Globe2 size={18} /> : <Rss size={18} />}</span><div><b>{item.name}</b><a href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).hostname}<ExternalLink size={11} /></a></div></div>
                   <div><span className={`source-health ${item.status}`}><i />{statusLabel(item.status)}</span><small>هر {item.scheduleMinutes.toLocaleString("fa-IR")} دقیقه</small></div>
                   <div className="source-time"><b>{formatDate(item.lastRunAt)}</b><small>{item.lastErrorCode ? `کد خطا: ${item.lastErrorCode}` : "اجرای زمان‌بندی‌شده"}</small></div>
                   <div className="source-output"><b>{item.articleCount.toLocaleString("fa-IR")}</b><small>خبر یکتا</small></div>
@@ -132,7 +134,7 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
                   </button>
                 </article>
               ))}
-              {!workspace.sources.length ? <div className="source-empty"><Rss size={26} /><b>هنوز منبعی ثبت نشده است</b><span>اولین RSS رسانه را از پنل کناری اضافه کنید.</span></div> : null}
+              {!workspace.sources.length ? <div className="source-empty"><Globe2 size={26} /><b>هنوز منبعی ثبت نشده است</b><span>صفحهٔ فهرست اخبار اولین سایت را اضافه کنید.</span></div> : null}
             </div>
           </section>
 
@@ -157,13 +159,13 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
           <section className="panel add-source-card" id="add-source">
             <div className="add-source-icon"><Plus size={19} /></div>
             <span>اتصال منبع تازه</span>
-            <h2>افزودن RSS</h2>
-            <p>آدرس پیش از ذخیره از نظر عمومی‌بودن شبکه و DNS بررسی می‌شود.</p>
+            <h2>افزودن سایت خبری</h2>
+            <p>CrawlerGenerator ساختار صفحه را کشف می‌کند، recipe محدود می‌سازد و فقط نسخهٔ آزمایش‌شده را فعال می‌کند.</p>
             <form onSubmit={createSource}>
               <label><span>نام منبع</span><input name="name" placeholder="مثلاً خبرگزاری ایرنا" minLength={2} maxLength={120} required /></label>
-              <label><span>آدرس RSS</span><input name="url" dir="ltr" type="url" placeholder="https://example.com/rss" required /></label>
+              <label><span>صفحهٔ فهرست اخبار</span><input name="url" dir="ltr" type="url" placeholder="https://example.com/news" required /></label>
               <label><span>فاصلهٔ اجرا</span><select name="scheduleMinutes" defaultValue="15"><option value="5">هر ۵ دقیقه</option><option value="15">هر ۱۵ دقیقه</option><option value="30">هر ۳۰ دقیقه</option><option value="60">هر یک ساعت</option></select></label>
-              <button disabled={creating}>{creating ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}{creating ? "در حال بررسی…" : "ثبت منبع"}</button>
+              <button disabled={creating}>{creating ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}{creating ? "در حال بررسی…" : "ثبت و آماده‌سازی"}</button>
             </form>
           </section>
 

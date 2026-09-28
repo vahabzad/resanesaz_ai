@@ -4,7 +4,7 @@ export type SourceSummary = {
   id: string;
   name: string;
   url: string;
-  adapterKey: "rss";
+  adapterKey: "crawler-generator" | "rss";
   status: SourceStatus;
   enabled: boolean;
   scheduleMinutes: number;
