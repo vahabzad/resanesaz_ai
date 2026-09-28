@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "crawl_run_source_active_unique" ON "crawl_run" USING btree ("source_id") WHERE "crawl_run"."status" in ('queued', 'running');

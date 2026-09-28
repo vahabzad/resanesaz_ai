@@ -1,0 +1,228 @@
+import "server-only";
+
+import { createHash, randomUUID } from "node:crypto";
+import { and, asc, eq, inArray, lt } from "drizzle-orm";
+import { crawlerDefinition, crawlerVersion, crawlRun, rawArticle, source } from "@/db/schema";
+import { isSourceDue } from "@/lib/crawl-schedule";
+import { recordAuditEvent } from "@/lib/server/audit";
+import { db } from "@/lib/server/database";
+import { parseRssFeed } from "@/lib/server/rss-adapter";
+import { assertPublicHttpsUrl, fetchPublicXml, UnsafeSourceUrlError } from "@/lib/server/url-safety";
+
+type CrawlTrigger = "manual" | "schedule";
+
+function runErrorCode(error: unknown) {
+  if (error instanceof UnsafeSourceUrlError) return "UNSAFE_SOURCE_URL";
+  if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return "UPSTREAM_TIMEOUT";
+  if (error instanceof Error && /^(UPSTREAM_\d{3}|RESPONSE_TOO_LARGE|REDIRECT_LIMIT|EMPTY_RESPONSE)$/.test(error.message)) return error.message;
+  return "ADAPTER_FAILED";
+}
+
+async function activeCrawler(mediaId: string, sourceId: string) {
+  const [configuration] = await db
+    .select({
+      sourceId: source.id,
+      url: source.url,
+      enabled: source.enabled,
+      versionId: crawlerVersion.id,
+    })
+    .from(source)
+    .innerJoin(crawlerDefinition, and(eq(crawlerDefinition.sourceId, source.id), eq(crawlerDefinition.mediaId, source.mediaId)))
+    .innerJoin(crawlerVersion, and(eq(crawlerVersion.definitionId, crawlerDefinition.id), eq(crawlerVersion.mediaId, source.mediaId), eq(crawlerVersion.status, "active")))
+    .where(and(eq(source.id, sourceId), eq(source.mediaId, mediaId)))
+    .limit(1);
+  return configuration ?? null;
+}
+
+export async function enqueueSourceRun(input: {
+  mediaId: string;
+  sourceId: string;
+  actorUserId: string | null;
+  correlationId: string;
+  trigger: CrawlTrigger;
+}) {
+  const configuration = await activeCrawler(input.mediaId, input.sourceId);
+  if (!configuration?.enabled) return null;
+
+  const runId = `crawl_run_${randomUUID()}`;
+  const inserted = await db.insert(crawlRun).values({
+    id: runId,
+    mediaId: input.mediaId,
+    sourceId: input.sourceId,
+    crawlerVersionId: configuration.versionId,
+    status: "queued",
+    trigger: input.trigger,
+    correlationId: input.correlationId,
+    requestedBy: input.actorUserId,
+  }).onConflictDoNothing().returning();
+
+  if (!inserted.length) {
+    const [active] = await db
+      .select({ id: crawlRun.id, status: crawlRun.status })
+      .from(crawlRun)
+      .where(and(eq(crawlRun.mediaId, input.mediaId), eq(crawlRun.sourceId, input.sourceId), inArray(crawlRun.status, ["queued", "running"])))
+      .orderBy(asc(crawlRun.createdAt))
+      .limit(1);
+    return active ? { runId: active.id, status: active.status as "queued" | "running", accepted: false } : null;
+  }
+
+  await recordAuditEvent({
+    mediaId: input.mediaId,
+    actorUserId: input.actorUserId,
+    action: "source.crawl.queued",
+    targetType: "crawl_run",
+    targetId: runId,
+    correlationId: input.correlationId,
+    metadata: { sourceId: input.sourceId, trigger: input.trigger },
+  });
+
+  return { runId, status: "queued" as const, accepted: true };
+}
+
+async function claimNextRun() {
+  const [candidate] = await db
+    .select({ id: crawlRun.id })
+    .from(crawlRun)
+    .where(eq(crawlRun.status, "queued"))
+    .orderBy(asc(crawlRun.createdAt))
+    .limit(1);
+  if (!candidate) return null;
+
+  const [claimed] = await db
+    .update(crawlRun)
+    .set({ status: "running", startedAt: new Date() })
+    .where(and(eq(crawlRun.id, candidate.id), eq(crawlRun.status, "queued")))
+    .returning();
+  return claimed ?? null;
+}
+
+async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof claimNextRun>>>) {
+  try {
+    const configuration = await activeCrawler(run.mediaId, run.sourceId);
+    if (!configuration?.enabled) throw new Error("SOURCE_DISABLED");
+    const { body, finalUrl } = await fetchPublicXml(configuration.url);
+    const items = parseRssFeed(body);
+    let insertedCount = 0;
+    let duplicateCount = 0;
+    let quarantinedCount = 0;
+
+    for (const item of items) {
+      let status = "new";
+      let quarantineReason: string | null = null;
+      try {
+        await assertPublicHttpsUrl(item.canonicalUrl);
+      } catch {
+        status = "quarantined";
+        quarantineReason = "UNSAFE_ARTICLE_URL";
+        quarantinedCount += 1;
+      }
+
+      const contentHash = createHash("sha256").update(`${item.canonicalUrl}\n${item.title}`).digest("hex");
+      const inserted = await db.insert(rawArticle).values({
+        id: `raw_${randomUUID()}`,
+        mediaId: run.mediaId,
+        sourceId: run.sourceId,
+        crawlRunId: run.id,
+        externalId: item.externalId,
+        canonicalUrl: item.canonicalUrl,
+        title: item.title,
+        summary: item.summary,
+        publishedAt: item.publishedAt,
+        contentHash,
+        status,
+        quarantineReason,
+        provenance: { adapterKey: "rss", feedUrl: finalUrl, contractVersion: "1", crawlRunId: run.id },
+      }).onConflictDoNothing().returning();
+      if (inserted.length) insertedCount += 1;
+      else duplicateCount += 1;
+    }
+
+    const finishedAt = new Date();
+    await db.update(crawlRun).set({ status: "succeeded", discoveredCount: items.length, insertedCount, duplicateCount, quarantinedCount, finishedAt })
+      .where(and(eq(crawlRun.id, run.id), eq(crawlRun.mediaId, run.mediaId)));
+    await db.update(source).set({ status: "active", lastRunAt: finishedAt, lastSuccessAt: finishedAt, lastErrorCode: null, updatedAt: finishedAt })
+      .where(and(eq(source.id, run.sourceId), eq(source.mediaId, run.mediaId)));
+    await recordAuditEvent({
+      mediaId: run.mediaId,
+      actorUserId: run.requestedBy,
+      action: "source.crawl.succeeded",
+      targetType: "crawl_run",
+      targetId: run.id,
+      correlationId: run.correlationId,
+      metadata: { sourceId: run.sourceId, discoveredCount: items.length, insertedCount, duplicateCount, quarantinedCount },
+    });
+    return { status: "succeeded" as const, runId: run.id };
+  } catch (error) {
+    const errorCode = runErrorCode(error);
+    const finishedAt = new Date();
+    await db.update(crawlRun).set({ status: "failed", errorCode, finishedAt }).where(and(eq(crawlRun.id, run.id), eq(crawlRun.mediaId, run.mediaId)));
+    await db.update(source).set({ status: "failed", lastRunAt: finishedAt, lastErrorCode: errorCode, updatedAt: finishedAt }).where(and(eq(source.id, run.sourceId), eq(source.mediaId, run.mediaId)));
+    await recordAuditEvent({
+      mediaId: run.mediaId,
+      actorUserId: run.requestedBy,
+      action: "source.crawl.failed",
+      targetType: "crawl_run",
+      targetId: run.id,
+      correlationId: run.correlationId,
+      metadata: { sourceId: run.sourceId, errorCode },
+    });
+    return { status: "failed" as const, runId: run.id, errorCode };
+  }
+}
+
+async function failStaleRuns(now = new Date()) {
+  const cutoff = new Date(now.getTime() - 15 * 60_000);
+  const staleRuns = await db
+    .update(crawlRun)
+    .set({ status: "failed", errorCode: "WORKER_STALLED", finishedAt: now })
+    .where(and(eq(crawlRun.status, "running"), lt(crawlRun.startedAt, cutoff)))
+    .returning();
+
+  for (const run of staleRuns) {
+    await db.update(source)
+      .set({ status: "failed", lastRunAt: now, lastErrorCode: "WORKER_STALLED", updatedAt: now })
+      .where(and(eq(source.id, run.sourceId), eq(source.mediaId, run.mediaId)));
+    await recordAuditEvent({
+      mediaId: run.mediaId,
+      actorUserId: run.requestedBy,
+      action: "source.crawl.failed",
+      targetType: "crawl_run",
+      targetId: run.id,
+      correlationId: run.correlationId,
+      metadata: { sourceId: run.sourceId, errorCode: "WORKER_STALLED" },
+    });
+  }
+  return staleRuns.length;
+}
+
+export async function enqueueDueSourceRuns(now = new Date()) {
+  const candidates = await db
+    .select({ id: source.id, mediaId: source.mediaId, scheduleMinutes: source.scheduleMinutes, lastRunAt: source.lastRunAt })
+    .from(source)
+    .where(eq(source.enabled, true));
+  let queued = 0;
+  for (const candidate of candidates) {
+    if (!isSourceDue(candidate.lastRunAt, candidate.scheduleMinutes, now)) continue;
+    const result = await enqueueSourceRun({
+      mediaId: candidate.mediaId,
+      sourceId: candidate.id,
+      actorUserId: null,
+      correlationId: `schedule:${candidate.id}:${randomUUID()}`,
+      trigger: "schedule",
+    });
+    if (result?.accepted) queued += 1;
+  }
+  return queued;
+}
+
+export async function runCrawlWorkerCycle(maxJobs = 4) {
+  const recovered = await failStaleRuns();
+  const scheduled = await enqueueDueSourceRuns();
+  const results = [];
+  for (let index = 0; index < maxJobs; index += 1) {
+    const run = await claimNextRun();
+    if (!run) break;
+    results.push(await executeClaimedRun(run));
+  }
+  return { recovered, scheduled, processed: results.length, results };
+}

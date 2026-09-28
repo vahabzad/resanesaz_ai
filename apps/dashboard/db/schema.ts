@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { boolean, index, integer, jsonb, pgTable, text, timestamp, uniqueIndex } from "drizzle-orm/pg-core";
 import { media, user } from "./auth-schema";
 
@@ -103,6 +104,9 @@ export const crawlRun = pgTable(
   (table) => [
     index("crawl_run_media_created_idx").on(table.mediaId, table.createdAt),
     index("crawl_run_source_created_idx").on(table.sourceId, table.createdAt),
+    uniqueIndex("crawl_run_source_active_unique")
+      .on(table.sourceId)
+      .where(sql`${table.status} in ('queued', 'running')`),
     uniqueIndex("crawl_run_correlation_unique").on(table.correlationId),
   ],
 );

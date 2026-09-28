@@ -19,12 +19,14 @@ export type CrawlRunSummary = {
   sourceId: string;
   sourceName: string;
   status: "queued" | "running" | "succeeded" | "failed";
+  trigger: "manual" | "schedule";
   discoveredCount: number;
   insertedCount: number;
   duplicateCount: number;
   quarantinedCount: number;
   errorCode: string | null;
   createdAt: string;
+  startedAt: string | null;
   finishedAt: string | null;
 };
 

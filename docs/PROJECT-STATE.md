@@ -33,6 +33,9 @@
 - RSS ایرنا به‌صورت واقعی اجرا شد: ۳۰ خبر وارد Inbox شد و اجرای دوم هر ۳۰ مورد را duplicate تشخیص داد.
 - جداسازی tenant در smoke test تأیید شد: رسانهٔ دوم از API منابع و Inbox هیچ داده‌ای از رسانهٔ اول دریافت نکرد.
 - تست‌های خودکار به ۱۰ مورد رسید و parsing RSS و محدوده‌های IP خصوصی/رزروشده را نیز پوشش می‌دهد.
+- اجرای Crawl از request جدا شد: API با `202` یک run صف‌بندی می‌کند، worker وضعیت‌های `queued/running` را مدیریت می‌کند و اجرای هم‌زمان تکراری هر Source با partial unique index بسته شده است.
+- scheduler بر اساس `scheduleMinutes` فعال شد؛ worker مستقل برای PostgreSQL و حالت inline برای PGlite محلی آماده است و run رهاشده پس از ۱۵ دقیقه با `WORKER_STALLED` آزاد می‌شود.
+- UI منابع وضعیت صف/اجرا را polling می‌کند و trigger دستی یا زمان‌بندی‌شده را نشان می‌دهد؛ تست‌های خودکار به ۱۲ مورد رسید.
 
 ## تصمیم‌های تثبیت‌شده
 
@@ -56,7 +59,7 @@
 
 ## قدم بعدی دقیق
 
-اجرای crawl را از request همگام به job/worker منتقل کن، scheduler و وضعیت queued/running را اضافه کن و سپس CrawlerGenerator را پشت قرارداد adapter `v1` برای منابعی که RSS کافی نیست متصل کن. پس از آن جزئیات Raw Article، quarantine و retry قابل اقدام در UI تکمیل شود.
+CrawlerGenerator را پشت قرارداد adapter `v1` برای منابعی که RSS کافی نیست متصل کن. سپس جزئیات Raw Article، quarantine و retry قابل اقدام را در UI تکمیل کن.
 
 ## معیار پایان فاز ۲
 

@@ -18,7 +18,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { CrawlRunSummary, SourceSummary, SourcesWorkspace } from "@/lib/contracts/sources";
 
 function formatDate(value: string | null) {
@@ -42,22 +42,31 @@ function runStatusLabel(status: CrawlRunSummary["status"]) {
 
 export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
   const router = useRouter();
-  const [runningSourceId, setRunningSourceId] = useState<string | null>(null);
+  const [queuingSourceId, setQueuingSourceId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "error"; text: string } | null>(null);
+  const activeSourceIds = useMemo(() => new Set(workspace.recentRuns
+    .filter((run) => run.status === "queued" || run.status === "running")
+    .map((run) => run.sourceId)), [workspace.recentRuns]);
+
+  useEffect(() => {
+    if (!activeSourceIds.size) return;
+    const timer = window.setInterval(() => router.refresh(), 2_000);
+    return () => window.clearInterval(timer);
+  }, [activeSourceIds.size, router]);
 
   async function runSource(sourceId: string) {
-    setRunningSourceId(sourceId);
+    setQueuingSourceId(sourceId);
     setNotice(null);
     const response = await fetch(`/api/v1/sources/${encodeURIComponent(sourceId)}/run`, { method: "POST" });
     const payload = await response.json().catch(() => null);
     if (response.ok) {
-      setNotice({ tone: "success", text: `${payload.data.insertedCount.toLocaleString("fa-IR")} خبر تازه وارد شد؛ ${payload.data.duplicateCount.toLocaleString("fa-IR")} مورد تکراری کنار گذاشته شد.` });
+      setNotice({ tone: "success", text: payload.data.accepted ? "اجرای منبع در صف worker قرار گرفت." : "این منبع از قبل در صف یا در حال اجراست." });
       router.refresh();
     } else {
       setNotice({ tone: "error", text: payload?.error?.message ?? "اجرای منبع ناموفق بود." });
     }
-    setRunningSourceId(null);
+    setQueuingSourceId(null);
   }
 
   async function createSource(event: React.FormEvent<HTMLFormElement>) {
@@ -117,9 +126,9 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
                   <div><span className={`source-health ${item.status}`}><i />{statusLabel(item.status)}</span><small>هر {item.scheduleMinutes.toLocaleString("fa-IR")} دقیقه</small></div>
                   <div className="source-time"><b>{formatDate(item.lastRunAt)}</b><small>{item.lastErrorCode ? `کد خطا: ${item.lastErrorCode}` : "اجرای زمان‌بندی‌شده"}</small></div>
                   <div className="source-output"><b>{item.articleCount.toLocaleString("fa-IR")}</b><small>خبر یکتا</small></div>
-                  <button className="run-source-button" disabled={runningSourceId !== null || !item.enabled} onClick={() => runSource(item.id)}>
-                    {runningSourceId === item.id ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />}
-                    {runningSourceId === item.id ? "در حال دریافت" : "اجرای دستی"}
+                  <button className="run-source-button" disabled={queuingSourceId !== null || activeSourceIds.has(item.id) || !item.enabled} onClick={() => runSource(item.id)}>
+                    {queuingSourceId === item.id || activeSourceIds.has(item.id) ? <LoaderCircle className="spin" size={15} /> : <Play size={14} fill="currentColor" />}
+                    {activeSourceIds.has(item.id) ? "در حال اجرا" : queuingSourceId === item.id ? "در حال صف‌بندی" : "اجرای دستی"}
                   </button>
                 </article>
               ))}
@@ -133,7 +142,7 @@ export function SourcesView({ workspace }: { workspace: SourcesWorkspace }) {
               {workspace.recentRuns.map((run) => (
                 <article key={run.id}>
                   <span className={`run-state ${run.status}`}>{run.status === "succeeded" ? <Check size={13} /> : run.status === "failed" ? <AlertTriangle size={13} /> : <Clock3 size={13} />}</span>
-                  <div><b>{run.sourceName}</b><small>{formatDate(run.createdAt)}</small></div>
+                  <div><b>{run.sourceName}</b><small>{run.trigger === "schedule" ? "زمان‌بندی‌شده" : "دستی"} · {formatDate(run.createdAt)}</small></div>
                   <span className={`run-label ${run.status}`}>{runStatusLabel(run.status)}</span>
                   <div className="run-metrics"><span>کشف <b>{run.discoveredCount.toLocaleString("fa-IR")}</b></span><span>جدید <b>{run.insertedCount.toLocaleString("fa-IR")}</b></span><span>تکراری <b>{run.duplicateCount.toLocaleString("fa-IR")}</b></span></div>
                   <ChevronLeft size={16} />
