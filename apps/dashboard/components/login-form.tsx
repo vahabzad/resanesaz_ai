@@ -43,14 +43,14 @@ export function LoginForm() {
 
       <label className="login-field">
         <span>ایمیل کاری</span>
-        <div><Mail size={17} /><input dir="ltr" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></div>
+        <div><Mail size={17} /><input dir="ltr" type="email" autoComplete="email" value={""} placeholder={"example@example.com"} onChange={(event) => setEmail(event.target.value)} required /></div>
       </label>
 
       <label className="login-field">
         <span>رمز عبور</span>
         <div>
           <LockKeyhole size={17} />
-          <input dir="ltr" type={showPassword ? "text" : "password"} autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={12} />
+          <input dir="ltr" type={showPassword ? "text" : "password"} autoComplete="current-password" value={""} placeholder={"*********"} onChange={(event) => setPassword(event.target.value)} required minLength={12} />
           <button type="button" onClick={() => setShowPassword((value) => !value)} aria-label={showPassword ? "پنهان‌کردن رمز" : "نمایش رمز"}>{showPassword ? <EyeOff size={16} /> : <Eye size={16} />}</button>
         </div>
       </label>

@@ -40,6 +40,18 @@ email: sara@didban.local
 password: MediaDemo-2026!
 ```
 
+## و دفعه‌های بعد که کد جدید git pull کردی، روال آپدیت تقریباً اینه:
+
+```code
+cd /var/www/resanesaz/resanesaz_ai
+git pull
+nvm use 22
+npm install
+npm run db:migrate
+npm run build
+systemctl restart resanesaz
+```
+
 در توسعه، دیتابیس PGlite در مسیر نادیده‌گرفته‌شدهٔ `.data` استفاده می‌شود. برای اجرای production-like می‌توان تنظیمات PostgreSQL در `.env.example` و `compose.yaml` را به‌کار گرفت.
 
 ## شروع سریع برای ادامهٔ کار
