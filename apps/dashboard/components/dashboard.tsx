@@ -34,10 +34,15 @@ import {
   X,
   Zap,
 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { authClient } from "@/lib/auth-client";
 import type { DashboardContext, MediaRole, MediaSummary } from "@/lib/contracts/context";
+import type { InboxWorkspace } from "@/lib/contracts/inbox";
+import type { SourcesWorkspace } from "@/lib/contracts/sources";
+import { InboxView } from "@/components/inbox-view";
+import { SourcesView } from "@/components/sources-view";
 import {
   crawlerHealth,
   destinations,
@@ -51,28 +56,28 @@ const navGroups = [
   {
     label: "فضای کار",
     items: [
-      { label: "داشبورد", icon: LayoutDashboard, active: true },
-      { label: "اخبار ورودی", icon: Inbox, count: 24 },
-      { label: "میز تحریریه", icon: PenLine, count: 7 },
-      { label: "آماده انتشار", icon: FileCheck2, count: 5 },
-      { label: "آرشیو", icon: Archive },
+      { label: "داشبورد", icon: LayoutDashboard, href: "/", view: "dashboard" },
+      { label: "اخبار ورودی", icon: Inbox, count: 24, href: "/inbox", view: "inbox" },
+      { label: "میز تحریریه", icon: PenLine, count: 7, href: "#", view: "editorial" },
+      { label: "آماده انتشار", icon: FileCheck2, count: 5, href: "#", view: "ready" },
+      { label: "آرشیو", icon: Archive, href: "#", view: "archive" },
     ],
   },
   {
     label: "عملیات رسانه",
     items: [
-      { label: "منابع و کراولرها", icon: Radio },
-      { label: "انتشار", icon: Send },
-      { label: "سایت‌ها", icon: Globe2 },
-      { label: "بات‌ها و کانال‌ها", icon: Bot },
+      { label: "منابع و کراولرها", icon: Radio, href: "/sources", view: "sources" },
+      { label: "انتشار", icon: Send, href: "#", view: "publishing" },
+      { label: "سایت‌ها", icon: Globe2, href: "#", view: "sites" },
+      { label: "بات‌ها و کانال‌ها", icon: Bot, href: "#", view: "bots" },
     ],
   },
   {
     label: "مدیریت",
     items: [
-      { label: "تحلیل عملکرد", icon: CircleGauge },
-      { label: "اعضا و دسترسی‌ها", icon: Users },
-      { label: "تنظیمات", icon: Settings },
+      { label: "تحلیل عملکرد", icon: CircleGauge, href: "#", view: "analytics" },
+      { label: "اعضا و دسترسی‌ها", icon: Users, href: "#", view: "members" },
+      { label: "تنظیمات", icon: Settings, href: "#", view: "settings" },
     ],
   },
 ];
@@ -92,12 +97,14 @@ function Sidebar({
   context,
   onSelectMedia,
   switchingMediaId,
+  activeView,
 }: {
   open: boolean;
   onClose: () => void;
   context: DashboardContext;
   onSelectMedia: (media: MediaSummary) => void;
   switchingMediaId: string | null;
+  activeView: string;
 }) {
   const [mediaMenuOpen, setMediaMenuOpen] = useState(false);
 
@@ -147,11 +154,11 @@ function Sidebar({
             <div className="nav-group" key={group.label}>
               <span className="nav-label">{group.label}</span>
               {group.items.map((item) => (
-                <button className={`nav-item ${item.active ? "active" : ""}`} key={item.label}>
+                <Link className={`nav-item ${item.view === activeView ? "active" : ""}`} href={item.href} key={item.label} onClick={onClose}>
                   <item.icon size={18} strokeWidth={1.9} />
                   <span>{item.label}</span>
                   {item.count ? <small>{item.count.toLocaleString("fa-IR")}</small> : null}
-                </button>
+                </Link>
               ))}
             </div>
           ))}
@@ -342,13 +349,24 @@ function PublishTimeline() {
   );
 }
 
-export function Dashboard({ context }: { context: DashboardContext }) {
+export function Dashboard({
+  context,
+  view = "dashboard",
+  sourcesWorkspace,
+  inboxWorkspace,
+}: {
+  context: DashboardContext;
+  view?: "dashboard" | "sources" | "inbox";
+  sourcesWorkspace?: SourcesWorkspace;
+  inboxWorkspace?: InboxWorkspace;
+}) {
   const router = useRouter();
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [switchingMediaId, setSwitchingMediaId] = useState<string | null>(null);
   const firstName = context.user.name.trim().split(/\s+/)[0] || "همکار";
   const initials = context.user.name.trim().split(/\s+/).slice(0, 2).map((part) => part.slice(0, 1)).join("");
+  const sectionTitle = view === "sources" ? "منابع و کراولرها" : view === "inbox" ? "اخبار ورودی" : `صبح بخیر، ${firstName}`;
 
   async function selectMedia(media: MediaSummary) {
     if (media.id === context.activeMedia.id || switchingMediaId) return;
@@ -370,17 +388,17 @@ export function Dashboard({ context }: { context: DashboardContext }) {
 
   return (
     <div className="app-shell">
-      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} context={context} onSelectMedia={selectMedia} switchingMediaId={switchingMediaId} />
+      <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} context={context} onSelectMedia={selectMedia} switchingMediaId={switchingMediaId} activeView={view} />
       <main className="main-content">
         <header className="topbar">
           <div className="page-intro">
             <button className="icon-button menu-button" onClick={() => setSidebarOpen(true)} aria-label="باز کردن منو"><Menu size={21} /></button>
-            <div><span>یکشنبه، ۵ مهر ۱۴۰۵</span><h1>صبح بخیر، {firstName}</h1></div>
+            <div><span>{view === "dashboard" ? "دوشنبه، ۶ مهر ۱۴۰۵" : context.activeMedia.name}</span><h1>{sectionTitle}</h1></div>
           </div>
           <div className="topbar-actions">
             <label className="search-box"><Search size={18} /><input aria-label="جست‌وجو" placeholder="جست‌وجوی خبر، منبع یا عملیات…" /><kbd>⌘ K</kbd></label>
             <button className="icon-button notification-button" aria-label="اعلان‌ها"><Bell size={19} /><span>۳</span></button>
-            <button className="primary-button"><Plus size={18} />خبر جدید</button>
+            {view === "sources" ? <a className="primary-button" href="#add-source"><Plus size={18} />افزودن منبع</a> : <button className="primary-button"><Plus size={18} />خبر جدید</button>}
             <div className="profile-wrap">
               <button className="profile-button" onClick={() => setProfileOpen((value) => !value)} aria-expanded={profileOpen}>
                 <span>{initials}</span><div><b>{context.user.name}</b><small>{roleLabels[context.activeMedia.role]}</small></div><ChevronDown size={15} />
@@ -395,7 +413,7 @@ export function Dashboard({ context }: { context: DashboardContext }) {
           </div>
         </header>
 
-        <div className="dashboard-content">
+        {view === "sources" && sourcesWorkspace ? <SourcesView workspace={sourcesWorkspace} /> : view === "inbox" && inboxWorkspace ? <InboxView workspace={inboxWorkspace} /> : <div className="dashboard-content">
           <section className="attention-strip">
             <div className="attention-icon"><Zap size={20} fill="currentColor" /></div>
             <div><b>سه تصمیم در انتظار شماست</b><span>یک خبر فوری، یک خطای انتشار و یک درخواست تأیید دسترسی</span></div>
@@ -427,7 +445,7 @@ export function Dashboard({ context }: { context: DashboardContext }) {
               </section>
             </aside>
           </div>
-        </div>
+        </div>}
       </main>
     </div>
   );

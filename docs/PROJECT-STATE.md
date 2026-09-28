@@ -1,6 +1,6 @@
 # وضعیت جاری پروژه
 
-آخرین به‌روزرسانی: ۱۴۰۵/۰۷/۰۵ (2026-09-27)
+آخرین به‌روزرسانی: ۱۴۰۵/۰۷/۰۶ (2026-09-28)
 
 ## مرحلهٔ فعال
 
@@ -26,6 +26,13 @@
 - migration و seed تکرارپذیر برای دو رسانهٔ نمونه آماده است؛ PostgreSQL production-like در Compose و PGlite محلی پشتیبانی می‌شوند.
 - ۸ تست واحد برای ماتریس مجوزها و قرارداد پاسخ پاس می‌شوند؛ smoke test واقعی نیز ورود ۲۰۰، context ۲۰۰، تغییر tenant مجاز ۲۰۰، tenant غیرمجاز ۴۰۳ و نشست ناشناس ۴۰۱ را تأیید کرد.
 - Gate فاز ۱ بسته شد.
+- فاز ۲ با مدل‌های Source، Crawler Definition/Version، Crawl Run و Raw Article آغاز شد؛ تمام مدل‌ها tenant-scoped هستند.
+- ADR مرز ingestion ثبت شد و RSS به‌عنوان اولین adapter قرارداد `v1` پیاده‌سازی شد.
+- دریافت RSS دارای HTTPS-only، DNS/IP revalidation، جلوگیری از SSRF، redirect محدود، timeout ده‌ثانیه و سقف پاسخ دو مگابایت است.
+- صفحات واقعی «منابع و کراولرها» و «اخبار ورودی» با Design System تأییدشده اضافه شدند.
+- RSS ایرنا به‌صورت واقعی اجرا شد: ۳۰ خبر وارد Inbox شد و اجرای دوم هر ۳۰ مورد را duplicate تشخیص داد.
+- جداسازی tenant در smoke test تأیید شد: رسانهٔ دوم از API منابع و Inbox هیچ داده‌ای از رسانهٔ اول دریافت نکرد.
+- تست‌های خودکار به ۱۰ مورد رسید و parsing RSS و محدوده‌های IP خصوصی/رزروشده را نیز پوشش می‌دهد.
 
 ## تصمیم‌های تثبیت‌شده
 
@@ -49,7 +56,7 @@
 
 ## قدم بعدی دقیق
 
-vertical slice فاز ۲ را بساز: ابتدا مدل‌های Source، Crawler Definition/Version، Crawl Run و Raw Article و قرارداد adapter را تثبیت کن؛ سپس یک منبع واقعی را از طریق adapter محدودشده وارد Inbox همان Media کن. UI صفحهٔ «منابع و کراولرها» و «اخبار ورودی» هم‌زمان با endpointهای tenant-scoped توسعه یابد.
+اجرای crawl را از request همگام به job/worker منتقل کن، scheduler و وضعیت queued/running را اضافه کن و سپس CrawlerGenerator را پشت قرارداد adapter `v1` برای منابعی که RSS کافی نیست متصل کن. پس از آن جزئیات Raw Article، quarantine و retry قابل اقدام در UI تکمیل شود.
 
 ## معیار پایان فاز ۲
 

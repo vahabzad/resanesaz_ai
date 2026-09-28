@@ -26,6 +26,10 @@
 
 - `GET /api/v1/context`: هویت، رسانه‌های قابل دسترس و رسانهٔ فعال؛ نیازمند نشست معتبر.
 - `POST /api/v1/media/select`: بدنهٔ strict به شکل `{ "mediaId": "..." }`؛ عضویت در سرور بررسی و تغییر موفق audit می‌شود.
+- `GET /api/v1/sources`: منابع، سلامت، شمار خبرها و اجراهای اخیر Media فعال.
+- `POST /api/v1/sources`: ساخت Source و نسخهٔ اولیهٔ crawler برای یک RSS عمومی امن.
+- `POST /api/v1/sources/:sourceId/run`: اجرای نسخهٔ فعال crawler با کنترل مجوز و مالکیت Media؛ خروجی شامل discovered، inserted، duplicate و quarantined است.
+- `GET /api/v1/articles`: آخرین Raw Articleهای Media فعال و آمار Inbox.
 - endpointهای Better Auth زیر `/api/auth/*` قرار دارند؛ ثبت‌نام عمومی و ساخت Media توسط کاربر عادی غیرفعال است.
 
 ## اصول مشترک envelope

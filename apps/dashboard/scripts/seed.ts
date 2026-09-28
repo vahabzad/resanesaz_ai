@@ -42,6 +42,38 @@ async function seed() {
       }).onConflictDoNothing();
     }
 
+    const sourceSeeds = [
+      { id: "source_irna_rss", name: "خبرگزاری ایرنا", url: "https://www.irna.ir/rss", scheduleMinutes: 10 },
+      { id: "source_isna_rss", name: "خبرگزاری ایسنا", url: "https://www.isna.ir/rss", scheduleMinutes: 15 },
+    ];
+
+    for (const item of sourceSeeds) {
+      const definitionId = `crawler_${item.id}`;
+      await cliDb.insert(schema.source).values({
+        ...item,
+        mediaId: mediaSeeds[0].id,
+        adapterKey: "rss",
+        status: "active",
+        enabled: true,
+        createdBy: seedUser.id,
+      }).onConflictDoNothing();
+      await cliDb.insert(schema.crawlerDefinition).values({
+        id: definitionId,
+        mediaId: mediaSeeds[0].id,
+        sourceId: item.id,
+        adapterKey: "rss",
+      }).onConflictDoNothing();
+      await cliDb.insert(schema.crawlerVersion).values({
+        id: `crawler_version_${item.id}_1`,
+        mediaId: mediaSeeds[0].id,
+        definitionId,
+        version: 1,
+        status: "active",
+        config: { feedUrl: item.url, contractVersion: "1" },
+        createdBy: seedUser.id,
+      }).onConflictDoNothing();
+    }
+
     const existingSeedAudit = await cliDb
       .select({ id: schema.auditEvent.id })
       .from(schema.auditEvent)
@@ -56,7 +88,7 @@ async function seed() {
         action: "system.seed.completed",
         targetType: "workspace",
         correlationId: "seed:phase-one",
-        metadata: { mediaCount: mediaSeeds.length },
+        metadata: { mediaCount: mediaSeeds.length, sourceCount: sourceSeeds.length },
       });
     }
 
