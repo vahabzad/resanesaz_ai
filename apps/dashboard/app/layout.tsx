@@ -1,10 +1,15 @@
 import "@fontsource-variable/vazirmatn";
 import "./globals.css";
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 
 export const metadata: Metadata = {
   title: "اتاق فرمان رسانه",
   description: "داشبورد مدیریت هوشمند رسانه‌های چندکاناله",
+};
+
+export const viewport: Viewport = {
+  colorScheme: "light",
+  themeColor: "#f4f5f7",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -14,4 +19,3 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     </html>
   );
 }
-
