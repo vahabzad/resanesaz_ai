@@ -3,7 +3,7 @@ node_modules/
 dist/
 build/
 coverage/
-.data/
+.data*/
 .env
 .env.*
 !.env.example
@@ -11,3 +11,4 @@ coverage/
 *.tsbuildinfo
 .DS_Store
 Thumbs.db
+.idea
