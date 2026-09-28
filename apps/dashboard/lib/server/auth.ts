@@ -14,9 +14,25 @@ function required(name: "BETTER_AUTH_SECRET") {
   return value;
 }
 
+function configuredOrigins(value: string | undefined) {
+  if (!value) return [];
+
+  return value
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean)
+    .map((origin) => new URL(origin).origin);
+}
+
+const baseURL = process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:3000";
+
 export const auth = betterAuth({
   appName: "اتاق فرمان رسانه",
-  baseURL: process.env.BETTER_AUTH_URL ?? "http://127.0.0.1:3000",
+  baseURL,
+  trustedOrigins: Array.from(new Set([
+    new URL(baseURL).origin,
+    ...configuredOrigins(process.env.BETTER_AUTH_TRUSTED_ORIGINS),
+  ])),
   secret: required("BETTER_AUTH_SECRET"),
   database: drizzleAdapter(db, {
     provider: "pg",
