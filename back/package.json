@@ -1,0 +1,45 @@
+{
+  "name": "@media/back",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "contracts",
+    "worker"
+  ],
+  "exports": {
+    "./worker": "./src/server/crawl-jobs.ts"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "dev:worker": "npm run dev --workspace=@media/worker",
+    "start:worker": "npm run start --workspace=@media/worker",
+    "build": "tsc --noEmit && npm run build --workspace=@media/contracts && npm run build --workspace=@media/worker",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace=@media/contracts && npm run typecheck --workspace=@media/worker",
+    "test": "node --import tsx --test tests/**/*.test.ts",
+    "eval:editorial-language": "tsx scripts/evaluate-editorial-language.ts",
+    "db:generate": "drizzle-kit generate --config drizzle.config.ts",
+    "db:migrate": "drizzle-kit migrate --config drizzle.config.ts",
+    "db:bootstrap-super-admin": "tsx scripts/bootstrap-super-admin.ts"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@media/contracts": "*",
+    "@openai/codex-sdk": "^0.160.1",
+    "better-auth": "^1.7.6",
+    "cheerio": "^1.2.0",
+    "dotenv": "^17.2.3",
+    "drizzle-orm": "^0.45.3",
+    "fast-xml-parser": "^5.11.1",
+    "pg": "^8.23.0",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.7.2",
+    "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3"
+  }
+}

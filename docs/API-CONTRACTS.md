@@ -1,10 +1,17 @@
-# قراردادهای یکپارچه‌سازی
+# قراردادهای API و یکپارچه‌سازی
 
-وضعیت: اصول adapterها مفهومی‌اند؛ envelope عمومی و endpointهای پایهٔ `v1` اجرایی شده‌اند.
+وضعیت: Frontend و Backend مستقل‌اند؛ API فعال در `back` پیاده‌سازی شده است.
 
-## API هستهٔ فعال
+## مرز اجرا
 
-تمام پاسخ‌ها `cache-control: no-store` و header به نام `x-request-id` دارند. شناسهٔ ورودی فقط با الگوی محدود پذیرفته می‌شود و در غیر این صورت سرور UUID تازه تولید می‌کند.
+- `front` هیچ API کسب‌وکاری ندارد و درخواست `/api/*` را در توسعه به Backend پروکسی می‌کند.
+- `back` مالک auth، authorization، دیتابیس، API و orchestration است.
+- `back/worker` jobهای طولانی را مستقل اجرا می‌کند.
+- پروژه‌های مرجع endpoint runtime محصول نیستند.
+
+## envelope عمومی
+
+تمام پاسخ‌ها `cache-control: no-store` و `x-request-id` دارند.
 
 ```json
 {
@@ -24,15 +31,49 @@
 }
 ```
 
-- `GET /api/v1/context`: هویت، رسانه‌های قابل دسترس و رسانهٔ فعال؛ نیازمند نشست معتبر.
-- `POST /api/v1/media/select`: بدنهٔ strict به شکل `{ "mediaId": "..." }`؛ عضویت در سرور بررسی و تغییر موفق audit می‌شود.
-- `GET /api/v1/sources`: منابع، سلامت، شمار خبرها و اجراهای اخیر Media فعال.
-- `POST /api/v1/sources`: ساخت Source برای صفحهٔ فهرست سایت با `adapterKey=crawler-generator` (پیش‌فرض) یا RSS اختیاری.
-- `POST /api/v1/sources/:sourceId/run`: صف‌بندی اجرای نسخهٔ فعال crawler با کنترل مجوز و مالکیت Media؛ پاسخ `202` و وضعیت `queued` برمی‌گرداند.
-- `GET /api/v1/articles`: آخرین Raw Articleهای Media فعال و آمار Inbox.
-- endpointهای Better Auth زیر `/api/auth/*` قرار دارند؛ ثبت‌نام عمومی و ساخت Media توسط کاربر عادی غیرفعال است.
+## API فضای Media
 
-## اصول مشترک envelope
+- `GET /api/v1/context`: هویت، رسانه‌های قابل دسترس، رسانهٔ فعال و `isPlatformAdmin` برای نمایش ورودی فضای پلتفرم.
+- `GET /api/v1/media/onboarding`: برای حساب ادمین، امکان ساخت رسانه، وجود رسانهٔ قبلی، نام کاربر و وضعیت ورود موقت را می‌دهد.
+- `POST /api/v1/media`: ساخت رسانه با بدنهٔ `{name, logoMode, logoData?, editorialViewpoint}`؛ لوگو یا به‌صورت مونگرام SVG از نام ساخته می‌شود یا تصویر PNG/JPEG/WebP با سقف یک مگابایت به‌شکل data URL می‌آید. دیدگاه رسانه ۱۰ تا ۲۰۰۰ نویسه است. سازنده با عضویت owner متصل می‌شود، رسانه فعال می‌شود و audit ثبت می‌شود.
+- `GET /api/v1/media/setup` و `PATCH /api/v1/media/setup`: خواندن/ذخیرهٔ ترجیحات راه‌اندازی رسانه شامل `setupCompleted`. بدنهٔ PATCH می‌تواند `name` اختیاری (۲ تا ۱۲۰ نویسه پس از trim) برای تغییر نام همان رسانهٔ فعال داشته باشد؛ تغییر نام مجوز `organization/update` می‌خواهد و همراه ترجیحات در یک تراکنش ممیزی می‌شود. `name` در ترجیحات ذخیره نمی‌شود؛ نام جاری از context خوانده می‌شود. wizard فقط در پایان مرحلهٔ چهارم این مقدار را true می‌کند؛ تا آن زمان صفحات Media کاربر را به wizard برمی‌گردانند. این ترجیحات دسترسی Source یا credential بات را فعال نمی‌کنند.
+- `POST /api/v1/media/select`: انتخاب Media پس از validation عضویت.
+- `GET /api/v1/sources`: Subscriptionهای Media فعال، سلامت Sourceهای سراسری و منابع قابل انتخاب کاتالوگ.
+- `POST /api/v1/sources`: ایجاد Subscription با بدنهٔ `{ "sourceId": "..." }`؛ crawler تازه نمی‌سازد.
+- `DELETE /api/v1/sources/:sourceId`: حذف Subscription همان Media؛ Source سراسری دست‌نخورده می‌ماند.
+- `GET /api/v1/articles`: Media Inbox Itemهای Media فعال همراه دادهٔ Raw Article سراسری.
+- `GET /api/v1/crawl-runs/:runId/events`: log یک run فقط اگر Media به Source آن subscribe باشد.
+
+## API فضای Platform
+
+- `GET /api/v1/platform/context`: برای هر کاربر واردشده، هویت و `isPlatformAdmin`؛ بدون نیاز به عضویت یا انتخاب Media. نشست نامعتبر پاسخ 401 می‌گیرد.
+
+این endpointها فقط برای Platform Admin مجازند:
+
+- `GET /api/v1/platform/codex/status`: وضعیت SDK با `status`، `authenticationMode`، `inferenceVerified`، `model`، `modelSource`، پیام پالایش‌شده و `checkedAt`؛ بدون credential یا مسیر محلی. مدل اختصاصی `CRAWLER_CODEX_MODEL` اولویت دارد (`crawler_config`)؛ در نبود آن، `config/read` از app-server همان CLI و همان working directory کراولرساز، مدل مؤثر را می‌خواند (`codex_config`). خطا یا مدل نامشخص با null گزارش می‌شود و نام حدس زده نمی‌شود. probe بدون shell، با سقف خروجی و timeout پنج‌ثانیه است؛ تنظیم خام منتشر نمی‌شود. Backend اجرای native را از `CODEX_EXECUTABLE`، PATH یا runtime همراه SDK پیدا می‌کند و `codex login status` را اجرا می‌کند. `authenticated` ورود معتبر است؛ `connected` پاسخ معتبر ساخت کراولر در پنج دقیقهٔ اخیر را تأیید می‌کند. بررسی وضعیت درخواست inference اجرا نمی‌کند.
+- `GET /api/v1/platform/articles`: فهرست سراسری محدود به ادمین با `query` عنوان، `sourceId`، `category` دقیق، `status` جدید/قرنطینه، `page` و `pageSize` از ۱۰/۲۰/۵۰؛ پاسخ شامل articles، total، page/pageCount، گزینه‌های منبع و دسته‌بندی است. محتوای HTML خام در فهرست منتشر نمی‌شود.
+- `GET /api/v1/platform/articles/:id`: جزئیات ذخیره‌شده محدود به ادمین شامل content متنی، summary، imageUrl، inlineImageUrls، دسته‌بندی، نویسنده و crawlRunId. HTML خام بازگردانده نمی‌شود؛ متن در UI escape و تصویر فقط پس از اعتبارسنجی URL عمومی HTTPS نمایش داده می‌شود. خبر حذف‌شده/ناموجود 404 است. نمایش جزئیات دوباره خبر را crawl نمی‌کند.
+- `POST /api/v1/platform/articles/delete-preview`: `{mode: "all" | "filtered", filters: {query, sourceId, category, status}}`؛ پاسخ شامل token امضاشده، محدوده، cutoff، تعداد اخبار و تعداد ورودی‌های صندوق است. حالت all فیلترهای ارسالی را کنار می‌گذارد.
+- `POST /api/v1/platform/articles/delete`: `{token, confirmed: true}`؛ فقط ادمین صادرکنندهٔ preview تا ده دقیقه مجاز است. حذف دائمی Raw و Inbox مرتبط همراه audit اتمیک انجام می‌شود؛ منابع/اشتراک‌ها/اجراها باقی می‌مانند. پاسخ `deletedArticles` و `deletedInboxItems` شمار واقعی حذف است. ticket دست‌کاری‌شده یا منقضی با 409 رد می‌شود؛ خبرهای دریافت‌شده پس از cutoff حذف نمی‌شوند. جزئیات ADR-0012.
+- `GET /api/v1/platform/sources`: تمام منابع، شامل متوقف‌ها، نسخهٔ فعال کراولر، شناسهٔ اجرای باز، شمار خبر خام سراسری و ۳۰ اجرای اخیر.
+  هر منبع `activeRun: {id, status: "queued"|"running", trigger, createdAt, startedAt} | null` دارد؛ نمایش پیشرفت ساخت/دیباگ از وضعیت اجرای باز می‌آید و مستقل از وضعیت خود منبع است. `activeRunId` برای سازگاری حفظ شده است.
+- `GET /api/v1/platform/crawl-runs/:runId/events`: وضعیت و حداکثر ۱۱۰۰ رویداد اخیر اجرای سراسری به ترتیب زمان ثبت، همراه `eventCount`، مستقل از Subscription رسانه. هر رویداد علاوه بر مرحله/شدت/پیام، `articleUrl` (بدون query و credential)، `errorCode` پالایش‌شده و `durationMs` دارد؛ مقدار null در سابقهٔ قدیمی طبیعی است.
+- `POST /api/v1/platform/sources`: ثبت Source غیرفعال، نسخهٔ draft و صف ساخت/آزمون سراسری در transaction؛ پاسخ 202 با `{sourceId, runId}`. فقط پس از آزمون موفق توسط Worker منبع فعال می‌شود.
+- `POST /api/v1/platform/sources/:sourceId/build`: ساخت و آزمون مجدد نسخهٔ جدید؛ پاسخ 202 با `{sourceId, runId, accepted}`. وجود اجرای باز باعث بازگرداندن همان run و `accepted=false` می‌شود.
+- `POST /api/v1/platform/sources/:sourceId/debug`: دیباگ کراولر وب با Codex؛ recipe نسخهٔ فعال/قبلی و حداکثر ۳۰ خطای ساختاریافتهٔ پالایش‌شده از اجراهای همان Source در نسخهٔ draft snapshot می‌شوند. Worker صفحه‌های خطادار همان origin را دوباره بررسی می‌کند و الگوی اصلاح‌شده را با gate ساخت آزمایش می‌کند. فقط قبولی نسخه را جایگزین می‌کند؛ شکست نسخهٔ فعال را حفظ می‌کند و توقف دستی نیز پس از قبولی حفظ می‌شود. اجرای باز تکثیر نمی‌شود؛ RSS پاسخ 409 دارد و از مسیر build/parser آزموده می‌شود. trigger برابر `debug` و `buildMode` کاتالوگ برابر `debug` است.
+- `POST /api/v1/platform/sources/:sourceId/run`: صف‌بندی اجرای دستی سراسری.
+- `POST /api/v1/platform/sources/:sourceId/stop`: توقف Source و لغو run فعال.
+- `POST /api/v1/platform/sources/:sourceId/resume`: فعال‌سازی مجدد Source.
+- `PATCH /api/v1/platform/sources/:sourceId/schedule`: ویرایش فاصلهٔ دریافت پس از ساخت، با بدنهٔ `{ "scheduleMinutes": 30 }`؛ عدد صحیح بین ۵ و ۱۴۴۰ دقیقه. پاسخ شامل `sourceId` و `scheduleMinutes` است؛ تغییر و audit در یک transaction ذخیره می‌شوند. زمان‌بند مقدار جدید را نسبت به `lastRunAt` در چرخهٔ بعد می‌خواند؛ اجرای باز، نسخهٔ کراولر و وضعیت فعال/متوقف تغییر نمی‌کنند.
+- `PATCH /api/v1/platform/sources/:sourceId/visibility`: بدنهٔ `{ "mode": "public" }`؛ حالت‌های `public`، `catalog_hidden` (فقط منع انتخاب جدید) و `media_disabled` (قطع نمایش منبع و توزیع به همهٔ رسانه‌ها). مستقل از توقف دریافت سراسری است؛ اخبار قبلی حفظ می‌شوند.
+- `DELETE /api/v1/platform/sources/:sourceId`: حذف قابل بازیابی، غیرفعال‌سازی و لغو اجراهای باز؛ نسخه‌ها، اخبار و تاریخچه حذف فیزیکی نمی‌شوند.
+- `POST /api/v1/platform/sources/:sourceId/restore`: بازیابی منبع حذف‌شده در وضعیت متوقف؛ فعال‌سازی مجدد یک عملیات مستقل است.
+
+کاتالوگ Platform شامل `visibleToMedia`، `mediaDeliveryEnabled` و `archivedAt` است؛ UI به‌طور پیش‌فرض منابع حذف‌شده را کنار می‌گذارد و فیلتر نمایش حذف‌شده‌ها برای بازیابی دارد. جزئیات سیاست‌ها در ADR-0008 ثبت شده است.
+
+رابط این عملیات در `/platform/sources` است. فضای پلتفرم انتخاب‌گر Media ندارد و نقش owner/admin رسانه به‌تنهایی مجوز این APIها نیست. ساخت وب با Codex SDK recipe اختصاصی می‌سازد و حداقل سه نمونه (حداکثر شش نمونهٔ متنوع) را پیش از فعال‌سازی بررسی می‌کند؛ شکست آزمون حداکثر سه بار به اصلاح الگو منجر می‌شود. RSS با parser واقعی آزموده می‌شود. کاتالوگ Platform فیلدهای `buildStatus` و `buildReport` و گزارش نمونه‌ها دارد؛ لاگ ساخت trigger برابر `build` دارد. نسخه‌های عمومی قبلی آزمون‌شده فرض نمی‌شوند. جزئیات در ADR-0011 ثبت است.
+
+## قرارداد job
 
 هر job طولانی حداقل این شناسه‌ها را حمل می‌کند:
 
@@ -40,37 +81,28 @@
 contractVersion
 jobId
 correlationId
-mediaId
+scopeType = platform | media
+scopeId
 requestedBy
 requestedAt
 idempotencyKey
 ```
 
-## Crawler Adapter
+Crawl Run دارای scope پلتفرم است؛ Publication Job دارای scope رسانه است.
 
-ورودی مفهومی: Source، نسخهٔ Crawler، محدودیت اجرا و correlation.
+## Crawler داخلی
 
-خروجی مفهومی: Crawl Run summary به‌همراه مجموعهٔ Raw Article و خطاهای مستقل هر URL. فیلدهای فعلی CrawlerGenerator مانند `title`، `content`، `contentHtml`، `imageUrl`، `categories`، `tags`، `author` و `publishedAt` پایهٔ mapping هستند، نه قرارداد نهایی.
+ورودی: Source، Crawler Version، محدودیت اجرا و correlation.
 
-Adapter اجرایی فعلی فقط به‌صورت server-to-server به بازوی CrawlerGenerator متصل می‌شود: اگر crawler آزمایش‌شدهٔ دامنه وجود نداشته باشد آن را با `/api/generate` می‌سازد، سپس نسخهٔ فعال را از `/api/sites/:siteId/run` اجرا و جزئیات کامل هر خبر را از endpointهای articles به Raw Article نگاشت می‌کند. URL سرویس یا خروجی فایل‌محور بازو به مرورگر افشا نمی‌شود.
+خروجی: Crawl Run summary، Platform Raw Articleها و خطاهای مستقل هر URL. فیلدهای canonical شامل `title`، `content`، `contentHtml`، `imageUrl`، `categories`، `tags`، `author` و `publishedAt` هستند.
 
-## Editorial Adapter
+`failedCount` شکست دریافت/استخراج را از `quarantinedCount` اخبار ذخیره‌شده در قرنطینه جدا می‌کند؛ سابقهٔ قبل از migration 0008 مقدار null دارد و شمارندهٔ قدیمی ممکن است هر دو را جمع کرده باشد. اجرای دارای خروجی معتبر و شکست جزئی، `succeeded/PARTIAL_EXTRACTION` و Source با وضعیت `degraded` دارد؛ بدون خروجی معتبر وب، run ناموفق با `ALL_EXTRACTIONS_FAILED` یا `NO_ARTICLE_LINKS` است و زمان آخرین موفقیت Source تغییر نمی‌کند. درخواست خبر در خطاهای موقت شبکه/timeout/408/429/5xx حداکثر یک بار پس از یک ثانیه تکرار می‌شود؛ هر درخواست دوباره URL guard را طی می‌کند.
 
-ورودی مفهومی: Story context، منابع immutable، نسخهٔ Editorial Policy، مقصدهای موردنظر و محدودیت محتوا.
+منطق استخراج در Backend و worker محصول پیاده‌سازی می‌شود. CrawlerGenerator فقط منبع مطالعهٔ recipe، prompt و آزمون مرجع است و Backend به API آن درخواست نمی‌زند.
 
-خروجی مفهومی: Article Version، provenance/claims metadata، usage و warningها. خروجی هیچ‌وقت خودکار «تأییدشده» محسوب نمی‌شود مگر workflow رسانه صریحاً اجازه دهد.
+## Connectorهای خارجی
 
-## Website Builder Adapter
-
-ورودی مفهومی: Site Specification نسخه‌دار و عملیات `generate | rebuild | continue`.
-
-خروجی مفهومی: Build status/progress، artifact reference، preview reference و خطا. مسیر محلی workspace نباید در API عمومی افشا شود.
-
-## Publisher Adapter
-
-ورودی مفهومی: Destination، rendition immutable، schedule و idempotency key.
-
-خروجی مفهومی: remote content ID/URL، attempt، status، timestamps و خطای پالایش‌شده. credential reference ارسال می‌شود، نه secret خام.
+adapter/connector تنها برای مرز خارجی واقعی استفاده می‌شود؛ مانند API مقصد انتشار یا سرویس ثالث. ورودی آن reference امن credential است، نه secret خام، و خروجی شامل remote ID/URL، attempt، status و خطای پالایش‌شده است.
 
 ## وضعیت‌های پایهٔ job
 
@@ -79,3 +111,91 @@ queued → running → succeeded
                  ↘ failed → retrying → succeeded|dead
 queued|running → cancelled
 ```
+
+### توقف مستقل و زبان سرویس تحریریه
+
+- `POST /api/v1/editorial/sections/:id/stop` و `/resume`: بدنهٔ `{ expectedRevision }`؛ فقط owner/admin/editor همان رسانه. نسخهٔ قدیمی یا سرویس حذف‌شده/خارج از scope پاسخ 409 می‌گیرد. توقف همهٔ کارهای باز دستی/خودکار را لغو می‌کند؛ فعال‌سازی خودبه‌خود کار لغوشده را retry نمی‌کند.
+- Workspace و پاسخ سرویس شامل `paused` است. PATCH با `paused` اختیاری برای سازگاری، در صورت نبود آن وضعیت موجود را حفظ می‌کند. صف برای هر کار `serviceStopped` می‌دهد تا تلاش مجدد سرویس متوقف/حذف‌شده در UI غیرفعال باشد.
+- `settings.language`: `fa/en/ar/tr/fr/de/es/ru`، پیش‌فرض فارسی. زبان در snapshot سیاست ثبت می‌شود و عنوان/لید/متن تولیدی Codex را تعیین می‌کند؛ تغییر تنظیمات روی کار تاریخی اثر ندارد.
+- هر سیاست دو دستور متنی مستقل در `settings.instructions` و `settings.socialInstructions` دارد؛ دومی اختیاری و ۲۰ تا ۵۰۰۰ نویسه است و برای ساخت نسخهٔ شبکهٔ اجتماعی استفاده می‌شود. خروجی تحریر شامل `title`, `lead` (چکیده), `body` (متن کامل), `socialText` و `reviewRequired` است؛ نسخهٔ اجتماعی در rendition ذخیره می‌شود.
+
+### نقطهٔ شروع تحریر خودکار
+
+- ساخت/ویرایش سرویس، `settings.autoReceivedSince` اختیاری با مقدار ISO دارای timezone یا `null` می‌گیرد. `null` یعنی همهٔ اخبار پردازش‌نشده؛ حذف فیلد در PATCH مقدار قبلی را حفظ می‌کند. مقدار نامعتبر پاسخ 400 دارد. `startAutoNow: true` در سطح بدنه، زمان ثبت سرور را یک‌بار جایگزین این مقدار می‌کند؛ پاسخ و Workspace زمان ثابت را برمی‌گردانند.
+- انتخاب خودکار با شرط `RawArticle.ingestedAt >= autoReceivedSince` و همان scope و فیلترهای سرویس انجام می‌شود؛ انتخاب دستی مستقل است. تغییر نقطهٔ شروع، کارهای خودکار باز خارج از بازه را با `AUTO_START_CHANGED` لغو می‌کند؛ خروجی تکمیل‌شده و کار دستی حفظ می‌شوند. کار لغوشده فقط با retry دستی برمی‌گردد. توقف، فعال‌سازی و restart زمان ذخیره‌شده را تغییر نمی‌دهند (ADR-0019).
+
+### قالب اجتماعی سرویس تحریریه
+
+- در ساخت/ویرایش سرویس، `settings.socialOutput` اختیاری است: `{format,maxLength,includeImage,prefix,suffix}`. format یکی از `title_lead/lead/title_body/title`، maxLength عدد صحیح ۱۰۰ تا ۲۰۰۰ و includeImage بولی است. prefix حداکثر ۱۰۰ و suffix حداکثر ۳۰۰ نویسه، بدون HTML؛ متن ثابت و جداکننده‌ها باید دست‌کم ۲۰ نویسه برای خبر باقی بگذارند. شیء ناقص، فیلد ناشناخته یا مقدار نامعتبر 400 می‌گیرد. همان مجوز owner/admin/editor و scope رسانه برقرار است.
+- نبود این تنظیم معادل `title_lead`، سقف ۲۰۰۰، همراه تصویر و متن ثابت خالی است. قالب در سیاست نسخه و صف snapshot می‌شود؛ تغییر سرویس نسخه‌های قبلی یا کارهای ثبت‌شده را تغییر نمی‌دهد. fallback دادهٔ قدیمی با rendition تهی نیز از سیاست همان نسخه استفاده می‌کند.
+- در تحریر AI، نسخهٔ اجتماعی با `socialInstructions` جدا از پرامپت خبر تولید می‌شود و سپس طبق قالب، سقف طول، متن ابتدا/انتها و تنظیم تصویر به rendition تبدیل می‌شود. متن ثابت وارد prompt مدل نمی‌شود. اگر متن اجتماعی تولیدشده موجود نباشد (نسخهٔ قدیمی یا ساخت دستی)، خروجی از canonical مشتق می‌شود؛ لید خالی از پاراگراف اول body استفاده می‌کند. قالب روی WebCard/WebFull اثر ندارد. rendition اجتماعی ارسالیِ دستی حفظ می‌شود و سقف عمومی آن همچنان ۲۰۰۰ است. انتشار واقعی انجام نمی‌شود (ADR-0018).
+
+
+### تکمیل تحریریهٔ فاز ۳
+
+- هر ردیف `stories` دارای `sourceNames:string[]` است: نام‌های یکتای snapshot منابع نسخهٔ جاری در همان رسانه؛ منبع قطع‌شده حذف می‌شود و نام پس از حذف Raw باقی می‌ماند. نبود نام، آرایهٔ خالی است.
+
+- `GET /api/v1/editorial`: `page` (پیش‌فرض ۱)، `pageSize` (۱۰/۲۰/۵۰؛ پیش‌فرض ۲۰)، `query`، `status`، `sectionId`، `sourceId`، `language`، `from/to` (ISO با offset) و `view=ready`. پاسخ دارای `stories` و `pagination:{page,pageSize,total,pageCount}` است. بخش اصلی/ثانویه و فقط منابع متصل نسخهٔ جاری در فیلتر لحاظ می‌شوند؛ scope از جلسه گرفته می‌شود.
+- `GET /api/v1/editorial/jobs`: page/pageSize و status؛ پاسخ jobs/counts/pagination. counts کل صف همان رسانه را می‌شمارند، total متعلق به نتایج فیلتر است. پارامتر ناشناخته/اندازه نامعتبر 400 می‌گیرد.
+- Section دارای `parentId:null|string` است. حذف یا تغییر hierarchy با revision/مجوز و قفل تراکنش انجام می‌شود؛ والد بیگانه/چرخه/والد حذف‌شده و حذف والد دارای فرزند فعال مجاز نیست. زیرسرویس تنظیمات و توقف مستقل دارد.
+- جزئیات Story شامل policies نسخه‌های همان خبر است. Article Version دارای sectionId اصلی، secondarySectionIds، sourceIds (شناسهٔ Story Source) و renditions است. منابع خارج از Story یا رسانه رد می‌شوند. metadata نمایشی section/policy/language/actor/time از همان نسخه است، نه Layout مقصد.
+- `POST /api/v1/editorial/stories/:id/sources`: `{expectedRevision,rawArticleId}` برای اتصال یا `{expectedRevision,sourceId}` برای قطع؛ دقیقاً یکی از دو شناسه. فقط ورودی سالم Inbox همان رسانه، حداکثر ۲۰ منبع و حداقل یک منبع. تغییر، نسخهٔ draft تازه می‌سازد؛ منابع تاریخی حذف نمی‌شوند و متن خودکار ادغام نمی‌شود.
+- `POST .../:id/versions`: علاوه بر title/lead/body/sectionId/expectedRevision، secondarySectionIds/sourceIds و renditions اختیاری‌اند. renditions ورودی شامل social:{text,imageUrl} و webCard:{title,summary,imageUrl} است؛ webFull سمت Backend از canonical مشتق می‌شود. HTML و اندازهٔ نامعتبر رد می‌شوند؛ URL تصویر فقط http(s) و هیچ fetch از این endpoint صورت نمی‌گیرد. بدون renditions خروجی‌های پیش‌فرض دوباره مشتق می‌شوند.
+- هر تأیید فقط همان revision/versionId را پوشش می‌دهد؛ تغییر متن، منابع، بخش یا rendition دوباره draft می‌شود. این قرارداد مجوز ارسال به مقصد ایجاد نمی‌کند؛ انتشار در فاز ۴/۵ با مصرف نسخهٔ تأییدشده توسعه خواهد یافت.
+
+
+### سایت داخلی و انتشار وب — فاز ۴
+
+- `GET /api/v1/sites`: سایت‌ها و بخش‌های فعال Media نشست؛ `POST` برای ساخت با `{name,slug,spec}` و `PATCH /sites/:id` با همان بدنه و `expectedRevision`. slug انگلیسی/عددی/خط‌تیره، سراسری یکتا و پس از ساخت ثابت است. spec شامل title/tagline/language (`fa/en/ar`)، accent هگز، layout (`lead/grid`)، footer و ۱ تا ۸ block با id/title/sectionIds/limit (۱ تا ۲۰) است. بخش بیگانه/حذف‌شده و HTML رد می‌شوند. مجوزهای destination/read/create/update اعمال می‌شوند.
+- `POST /api/v1/sites/:id/lifecycle`: `{expectedRevision,action:activate|pause|archive|restore}`. activate طراحی پیش‌نویس را عمومی می‌کند؛ pause/archive سایت را از دسترس عمومی خارج و کارهای queued آن را لغو می‌کنند. restore به draft برمی‌گرداند. archive مجوز destination/delete دارد؛ بقیه update.
+- `GET /api/v1/sites/:id/preview` و `/preview/stories/:storyId`: احراز هویت و destination/read؛ فقط همان Media. پیش‌نمایش spec ذخیره‌شده و حداکثر ۲۰ نمونهٔ approved را نمایش می‌دهد و خبر منتشر نمی‌کند.
+- `GET /api/v1/public/sites/:slug` و `/stories/:storyId`: تنها سایت live و snapshot خبرهای واقعاً منتشرشده؛ بدون نشست. queryهای page، sectionId و view=all مجازند؛ فهرست خبر ۲۰تایی، blocks مستقل با سقف تنظیم‌شده و pagination برمی‌گردند. policy، actor، credential و Raw Article در قرارداد عمومی نیستند.
+- `POST /api/v1/publications`: `{siteId,versionId,scheduledAt?}` با ISO دارای offset؛ زمان گذشته رد می‌شود. مجوز publication/create و latest approved دقیق الزامی است. درخواست تکراری همان شناسهٔ job و `duplicate:true` می‌دهد. کلید یکتا Media × Site × Version است.
+- `GET /api/v1/publications`: page (۲۰تایی)، status و siteId؛ پاسخ jobs/counts/pagination. هر job دارای وضعیت، attempts، scheduledAt، finishedAt، errorCode، resultPath، نسخه و وضعیت سایت است. مجوز publication/read اعمال می‌شود.
+- `POST /api/v1/publications/:id/retry|cancel` با `{}` و مجوز متناظر. cancel فقط queued؛ retry فقط failed/cancelled با سایت live، نسخهٔ همچنان approved و کمتر از سه تلاش است؛ retry زمان را فوری می‌کند. کدهای SITE_STOPPED، ACCESS_REVOKED، APPROVAL_CHANGED و WORKER_FAILED پالایش‌شده‌اند. همان مجوز و تأیید در worker دوباره بررسی می‌شوند؛ نتیجه و snapshot منتشرشده اتمیک‌اند (ADR-0020).
+
+- `POST /api/v1/publications/:id/reschedule` با `{scheduledAt,expectedScheduledAt}` (ISO دارای offset) و publication/create: فقط queued/failed/cancelled با سایت live و تأیید معتبر؛ زمان تازه آینده و زمان قبلی باید منطبق باشد. تلاش مصرف‌شده ریست نمی‌شود و ثبت نتیجهٔ موفق قابل زمان‌بندی دوباره نیست.
+### درخواست افزودن منبع
+
+- `GET /api/v1/media/source-categories` (ادمین رسانه): دسته‌های داخلی فعال همراه نام فارسی، انگلیسی و عربی.
+- `POST /api/v1/media/source-access-requests` (ادمین رسانه): `{ sourceType: "website", url, categoryMode: "all" | "selected", categoryIds?: string[] }` برای وب‌سایت؛ یا `{ sourceType: "social", url }` برای شبکهٔ اجتماعی. آدرس باید HTTPS باشد. در حالت selected حداقل یک شناسهٔ دستهٔ فعال لازم است؛ در حالت all شناسه‌ای ارسال نمی‌شود. نام نمایشی از hostname آدرس ساخته می‌شود و درخواست در scope `mediaId` فعال برای بررسی سوپر ادمین ثبت می‌شود. ادمین می‌تواند چند درخواست جداگانه ثبت کند.
+- `GET /api/v1/platform/categories` (سوپر ادمین): کاتالوگ دسته‌ها.
+- `POST /api/v1/platform/categories` (سوپر ادمین): `{ nameFa, nameEn, nameAr }`؛ هر سه ترجمه لازم‌اند.
+- `PATCH /api/v1/platform/categories/:id` (سوپر ادمین): `{ nameFa, nameEn, nameAr, active }` برای ویرایش ترجمه‌ها یا فعال/غیرفعال کردن دسته.
+- `GET /api/v1/platform/source-access-requests` (سوپر ادمین): فهرست درخواست‌ها همراه رسانه، نوع، دسته‌ها، وضعیت و امکان استفاده از کراولر آماده.
+- `PATCH /api/v1/platform/source-access-requests/:id` (سوپر ادمین): `{ action: "reject" | "grant_existing" | "queue_crawler" }`. grant_existing دسترسی Media را به Source دارای crawler فعال می‌دهد؛ queue_crawler برای Source جدید یا آماده‌نشده ساخت را صف می‌کند و پس از موفقیت build، دسترسی Media و دسته‌های درخواستی را اعمال می‌کند. شکست ساخت با وضعیت crawler_failed قابل retry است. همهٔ تصمیم‌ها audit می‌شوند.
+
+در ثبت/ویرایش سایت، `designBrief.categoryIds` شناسه‌های دسته‌های فعال کاتالوگ Platform است؛ نام‌های `categories` در Backend از کاتالوگ بازسازی می‌شوند. دستهٔ ناموجود یا غیرفعال با 400 رد می‌شود. برای سازگاری با پیش‌نویس قدیمیِ بدون شناسه، فقط نام‌های موجود در کاتالوگ فعال پذیرفته می‌شوند. `GET /api/v1/media/source-categories` برای ادمین احرازشدهٔ بدون رسانه نیز قابل دریافت است؛ کاربران دیگر همچنان به عضویت رسانه و مجوز خواندن منابع نیاز دارند.
+
+- `POST /api/v1/media/logo-preview`: فقط ادمین احرازشده، حتی بدون رسانه؛ ورودی نام، توضیح سبک، سه رنگ hex و متن هویت بصری؛ خروجی request snapshot، artwork اعتبارسنجی‌شده و data URL پیش‌نمایش. خطای ورودی 400، بدون نشست 401، بدون نقش 403، تکرار/هم‌زمانی 429 و خطای مدل 503 است. هیچ Media/Site ایجاد نمی‌شود.
+- `designBrief.design` اکنون `logoData` موقت برای آپلود، `logoInstructions`، `logoDraft` شامل request/artwork/approved و `identityDetails` خصوصی را می‌پذیرد. لوگوی generated نیازمند تأیید مطابق مشخصات فعلی است؛ آپلود در Backend اعتبارسنجی و در `spec.logo` ذخیره می‌شود و از brief حذف می‌شود. لوگوی Media هم‌زمان و scoped به‌روز می‌شود. خروجی عمومی `spec.logo` را دارد؛ اطلاعات خصوصی همچنان حذف می‌شوند.
+
+`GET/PATCH /api/v1/media/setup` فیلد اختیاری `setupStep` (عدد صحیح ۱ تا ۴) را برای ادامهٔ wizard نگه می‌دارد. فرانت فقط پس از موفقیت ذخیرهٔ داده‌های مرحله، مرحلهٔ بعد را ثبت و سپس مسیر را عوض می‌کند. حذف این فیلد از درخواست کلاینت قدیمی، مقدار ثبت‌شده را پاک نمی‌کند.
+
+در راه‌اندازی ناتمام، `POST /api/v1/media/source-access-requests` ردیف draft می‌سازد. `DELETE /api/v1/media/source-access-requests/:id` با مجوز source/delete فقط پیش‌نویس همان Media را منطقی حذف می‌کند (withdrawn). تکمیل `/media/setup` درخواست‌های باقی‌مانده را اتمیک pending می‌کند. GET و بررسی مستقیم Platform تا پیش از تکمیل، این درخواست‌ها را در دسترس بررسی نمی‌گذارند. ردیف pending قدیمی رسانهٔ ناتمام در GET ادمین به‌صورت draft بازگردانده می‌شود.
+
+ثبت تکراری `/media/source-access-requests` برای URL معادل در همان Media، با 409 رد می‌شود؛ وضعیت withdrawn مستثناست. کنترل زیر قفل Media است و ثبت هم‌زمان را پوشش می‌دهد. Media دیگر محدود نمی‌شود. کلید بررسی تکرار www/fragment/اسلش پایانی و ترتیب query را یکسان می‌کند؛ URL اصلی برای نمایش/کراول حفظ می‌شود. تکمیل راه‌اندازی با پیش‌نویس تکراری قدیمی نیز 409 می‌گیرد تا ادمین موارد اضافه را حذف کند.
+
+`PATCH /api/v1/media/source-access-requests/:id` با بدنهٔ کامل نوع/URL/دسته مانند POST و مجوز source/update، پیش‌نویس همان Media را ویرایش می‌کند. وضعیت draft یا pending قدیمی و راه‌اندازی ناتمام لازم است. لینک معادل منبع دیگر 409، دستهٔ ناموجود/غیرفعال 400 و دسترسی Media دیگر 404 است. تغییر، audit می‌شود؛ در تغییر URL، sourceUrls سیاست‌های فعال همان Media و revision آن‌ها نیز اتمیک به‌روز می‌شوند. پس از تکمیل، ویرایش 409 می‌گیرد.
+# معادل‌سازی دسته‌های منابع — فقط سوپر ادمین
+
+## درخواست ایجاد رسانه
+
+- `POST /api/v1/media/sources/:rowId/categories`: `{categoryIds: string[]}`؛ درخواست دسته‌های بیشتر برای منبع وب‌سایتِ رسانهٔ فعال. برای Subscription مجاز، درخواست مستقل pending ثبت می‌شود؛ برای درخواست باز منبع، همان درخواست افزایش می‌یابد. دستهٔ تکراری/قبلاً مجاز/pending رد می‌شود.
+- `DELETE /api/v1/media/sources/:rowId`: حذف منبع از رسانهٔ فعال، غیرفعال‌کردن Subscription و لغو درخواست‌های باز؛ حذف سراسری Source نیست. `rowId` شناسهٔ کارت overview است؛ دسترسی رسانهٔ دیگر ۴۰۴ و نقش نامجاز ۴۰۳ است.
+- درخواست‌های `category_extension` در API بررسی منابع با همان اقدام‌های `grant_existing` و `reject` بررسی می‌شوند؛ `queue_crawler` برای این نوع ۴۰۹ است. تأیید مجموعهٔ مجاز را افزایش می‌دهد و جایگزین نمی‌کند.
+
+- `GET /api/v1/media/overview`: وضعیت درخواست، `canReadInbox`، درخواست‌ها و دسترسی‌های منابع، دسته‌های فعال فرم و خلاصهٔ فقط‌خواندنی سایت‌های رسانهٔ فعال. سایت در نبود صف ساخت به‌صورت `not_started` و پیش از تأیید به‌صورت `waiting_approval` نمایش داده می‌شود؛ `publicPath` فقط برای سایت آماده مجاز است.
+- `GET /api/v1/articles`: برای ادمین پس از تأیید رسانه و حداقل یک اشتراک منبع فعال مجاز است؛ فهرست و آمار فقط منابع قابل ارائه و مجاز همان رسانه را شامل می‌شوند.
+
+- `GET /api/v1/media/request`: وضعیت درخواست فقط برای رسانهٔ فعال نشست؛ draft/pending/approved/rejected، نسخه، زمان‌ها و یادداشت بررسی.
+- `GET /api/v1/platform/media-requests?status=pending|approved|rejected|all&page=1&q=...`: فهرست ۲۰تایی برای سوپر ادمین، مشخصات رسانه/سایت/منابع/نام سردبیرها و شمار pending.
+  هر عضو `sources` علاوه بر `url` و `sourceType`، دارای `categoryMode` و `categories: [{id, name}]` از دسته‌های همان درخواست منبع است. نام دستهٔ ناموجود `null` است؛ حالت `all` به معنی همهٔ دسته‌ها و دسته‌بندی برای منبع اجتماعی کاربرد ندارد.
+- `PATCH /api/v1/platform/media-requests/:mediaId`: `{action: "approve"|"reject", expectedRevision, note?}`؛ دلیل رد حداقل سه نویسه. نقش نامجاز ۴۰۳، درخواست ناموجود ۴۰۴، تصمیم تکراری/نسخهٔ قدیمی ۴۰۹.
+- ارسال نهایی `/api/v1/media/setup` درخواست را در تراکنش ذخیرهٔ فرم ثبت می‌کند. بدون approved عملیات اجرایی سایت و انتشار مجاز نیستند.
+
+- `GET /api/v1/platform/category-mappings?status=pending|mapped|all&q=...&page=1`: فهرست ۲۰تایی، خلاصهٔ شمارها و دسته‌های فعال مقصد.
+- `GET /api/v1/platform/category-mappings/summary`: شمار کل، معادل‌شده و بدون معادل.
+- `PATCH /api/v1/platform/category-mappings/:id`: `{expectedRevision, categoryId}` یا `{expectedRevision, newCategory: {nameFa,nameEn,nameAr}}`. ساخت و اتصال اتمیک؛ نسخهٔ قدیمی ۴۰۹، دستهٔ غیرفعال/ورودی نامعتبر ۴۰۰.
+- `GET /api/v1/platform/category-mappings/:id/history`: ۲۰ تغییر اخیر شامل معادل قبلی/جدید، تصمیم‌گیر و زمان.
+

@@ -1,0 +1,2 @@
+ALTER TABLE "editorial_section" ALTER COLUMN "settings" SET DEFAULT '{"language":"fa","factionId":null,"viewpointStrength":0,"humor":0,"formality":70,"sourceIds":[],"categories":[]}'::jsonb;--> statement-breakpoint
+ALTER TABLE "editorial_section" ADD COLUMN "paused" boolean DEFAULT false NOT NULL;

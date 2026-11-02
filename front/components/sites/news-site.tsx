@@ -1,0 +1,26 @@
+/* eslint-disable @next/next/no-img-element -- Public delivery uses direct validated images and never proxies untrusted media. */
+import type { CSSProperties } from "react";
+import type { SitePage, WebSnapshot } from "@/lib/contracts/sites";
+
+type Article = WebSnapshot & { publishedAt: string | null };
+export function NewsSite({ data, basePath, storyId }: { data: SitePage; basePath: string; storyId?: string }) {
+  const { spec } = data.site; const english = spec.language === "en";
+  const full = storyId ? data.articles.find(article => article.storyId === storyId) : null;
+  const home = `${basePath}`;
+  function card(article: Article, featured = false) { return <a className={`news-site-card ${featured ? "featured" : ""}`} href={`${basePath}/news/${encodeURIComponent(article.storyId)}`} key={article.storyId}>
+    {article.webCard.imageUrl && <img src={article.webCard.imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />}
+    <div><span className="news-site-section">{article.sectionNames.join(" · ")}</span><h3 dir="auto">{article.webCard.title}</h3><p dir="auto">{article.webCard.summary}</p><small>{article.publishedAt ? new Date(article.publishedAt).toLocaleString(english ? "en-GB" : "fa-IR", { timeZone: "Asia/Tehran" }) : "پیش‌نمایش · منتشر نشده"}</small></div>
+  </a>; }
+  return <main className={`news-site ${spec.layout}`} dir={english ? "ltr" : "rtl"} lang={spec.language} style={{ "--site-accent": spec.accent } as CSSProperties}>
+    {data.preview && <div className="news-site-preview">پیش‌نمایش خصوصی · خبرها هنوز با این پیش‌نمایش منتشر نمی‌شوند.</div>}
+    <header className="news-site-header"><a href={home} className="news-site-brand">{spec.logo && <img className="news-site-logo" src={spec.logo} alt="" />}{spec.title}</a><p>{spec.tagline}</p><nav aria-label="بخش‌های سایت"><a href={home}>{english ? "Home" : "صفحهٔ اصلی"}</a><a href={`${home}?view=all`}>{english ? "All news" : "همهٔ خبرها"}</a>{data.sectionOptions.map(section => <a aria-current={data.selectedSection === section.id ? "page" : undefined} key={section.id} href={`${home}?sectionId=${encodeURIComponent(section.id)}`}>{section.name}</a>)}</nav></header>
+    <div className="news-site-content">
+      {full ? <article className="news-site-full"><a className="news-site-back" href={home}>{english ? "Back to news" : "بازگشت به خبرها"}</a><p className="news-site-section">{full.sectionNames.join(" · ")}</p><h1 dir="auto">{full.webFull.title}</h1><p className="news-site-byline">{full.publishedAt ? new Date(full.publishedAt).toLocaleString(english ? "en-GB" : "fa-IR", { timeZone: "Asia/Tehran" }) : "پیش‌نمایش"} · {english ? "Sources" : "منابع"}: {full.sourceNames.join("، ") || "—"}</p>{full.webFull.lead && <p className="news-site-lead" dir="auto">{full.webFull.lead}</p>}{full.webFull.imageUrl && <img className="news-site-cover" src={full.webFull.imageUrl} alt="" referrerPolicy="no-referrer" />}<div className="news-site-body" dir="auto">{full.webFull.body}</div>{full.seo?.role !== "primary" && full.seo?.primaryPath && <p className="news-site-original"><a href={full.seo.primaryPath}>{english ? "Read the original article" : "مطالعهٔ خبر در سایت اصلی"}</a></p>}</article> : <>
+        {!data.articles.length && <div className="news-site-empty"><h1>{english ? "No published news yet" : data.preview ? "هنوز خبر تأییدشده‌ای برای نمایش نیست" : "هنوز خبری منتشر نشده است"}</h1><p>{english ? "Please check back later." : data.preview ? "خبر را در تحریریه تأیید کنید تا پیش‌نمایش آن دیده شود." : "خبرهای تازهٔ این رسانه را به‌زودی اینجا بخوانید."}</p></div>}
+        {data.blocks.length ? data.blocks.map(block => <section className="news-site-block" key={block.id}><h2>{spec.blocks.find(b => b.id === block.id)?.title}</h2>{block.articles.length ? <div className="news-site-grid">{block.articles.map((article, index) => card(article, spec.layout === "lead" && index === 0))}</div> : <p className="news-site-block-empty">{english ? "No news in this section yet." : "هنوز خبری در این بخش منتشر نشده است."}</p>}</section>) : Boolean(data.articles.length) && <section className="news-site-block"><h1>{data.sectionOptions.find(section => section.id === data.selectedSection)?.name ?? (english ? "Latest news" : "آخرین خبرها")}</h1><div className="news-site-grid">{data.articles.map((article, index) => card(article, spec.layout === "lead" && index === 0))}</div></section>}
+        {Boolean(data.blocks.length) && !data.preview && <nav className="news-site-pagination"><a href={`${home}?view=all`}>{english ? "Browse all news" : "مشاهدهٔ همهٔ خبرها"}</a></nav>}
+        {!data.blocks.length && data.pagination.pageCount > 1 && <nav className="news-site-pagination" aria-label="صفحه‌بندی خبرهای سایت">{data.pagination.page > 1 && <a href={`${home}?view=all&page=${data.pagination.page - 1}${data.selectedSection ? `&sectionId=${encodeURIComponent(data.selectedSection)}` : ""}`}>{english ? "Previous" : "قبلی"}</a>}<span>{data.pagination.page} / {data.pagination.pageCount}</span>{data.pagination.page < data.pagination.pageCount && <a href={`${home}?view=all&page=${data.pagination.page + 1}${data.selectedSection ? `&sectionId=${encodeURIComponent(data.selectedSection)}` : ""}`}>{english ? "Next" : "بعدی"}</a>}</nav>}
+      </>}
+    </div><footer className="news-site-footer">{spec.footer}</footer>
+  </main>;
+}

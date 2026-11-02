@@ -1,0 +1,1 @@
+UPDATE "article_version" AS v SET "source_ids" = coalesce((SELECT jsonb_agg(s.id ORDER BY s.id) FROM "story_source" AS s WHERE s.story_id = v.story_id AND s.media_id = v.media_id), '[]'::jsonb) WHERE v.source_ids IS NULL;

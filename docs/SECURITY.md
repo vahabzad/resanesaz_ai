@@ -16,14 +16,14 @@
 
 - تمام HTML، JSON و متن دریافت‌شده از منابع بیرونی نامطمئن است.
 - خروجی مدل نامطمئن است تا schema validation و policy check را پاس کند.
-- پروژه‌های مرجع trusted-by-default نیستند و پشت adapter اجرا می‌شوند.
+- پروژه‌های مرجع trusted-by-default نیستند و در runtime محصول اجرا یا فراخوانی نمی‌شوند؛ کد و prompt استخراج‌شده پیش از بازپیاده‌سازی بازبینی و تست می‌شود.
 - مرورگر و dashboard نباید به secrets یا مسیرهای محلی worker دسترسی پیدا کنند.
 
 ## تهدیدهای اولویت‌دار
 
 - Prompt Injection از متن خبر یا صفحهٔ منبع
 - SSRF هنگام crawl یا fetch URL کاربر
-- عبور از مرز Media و دسترسی به دادهٔ رسانهٔ دیگر
+- عبور از مرز Platform/Media یا دسترسی یک Media به دادهٔ Media دیگر
 - افشای token در log، error، export یا frontend bundle
 - انتشار تکراری بر اثر retry
 - سوءاستفاده از تولید/اجرای کد و child process
@@ -33,8 +33,8 @@
 
 ## کنترل‌های الزامی از ابتدا
 
-- tenant scoping در query و authorization، نه فقط فیلتر UI
-- RBAC و deny-by-default برای عملیات انتشار و مدیریت credential
+- جداسازی Platform Scope از Media Scope در query، job و authorization، نه فقط فیلتر UI
+- Permission-based authorization و deny-by-default برای عملیات Platform، انتشار و مدیریت credential
 - secret manager یا encryption-at-rest با امکان rotation
 - URL allow/deny policy، DNS/IP revalidation و block شبکه‌های خصوصی برای crawler
 - sanitize کردن HTML و جداسازی preview با origin/CSP مناسب
@@ -73,10 +73,10 @@
 - تغییر Media با actor، target، correlation ID و metadata نقش audit می‌شود.
 - پاسخ‌های API محتوای خطای داخلی را افشا نمی‌کنند و cache نمی‌شوند.
 - secret و دیتابیس محلی از Git خارج‌اند؛ فقط `.env.example` commit می‌شود.
-- Source فقط HTTPS عمومی را می‌پذیرد؛ hostname در ایجاد و اجرا resolve و تمام IPها در برابر محدوده‌های خصوصی، loopback، link-local و رزروشده بررسی می‌شوند.
+- Source سراسری فقط HTTPS عمومی را می‌پذیرد؛ hostname در ایجاد و اجرا resolve و تمام IPها در برابر محدوده‌های خصوصی، loopback، link-local و رزروشده بررسی می‌شوند.
 - redirectهای ingestion دستی و محدودند و هر مقصد دوباره اعتبارسنجی می‌شود؛ timeout ده‌ثانیه و سقف پاسخ دو مگابایت اعمال می‌شود.
-- CrawlerGenerator فقط server-to-server فراخوانی می‌شود و API بدون auth آن به مرورگر یا اینترنت عمومی expose نمی‌شود.
+- crawler وب در Backend/Worker اصلی اجرا می‌شود؛ هیچ URL یا credential برای پروژه‌های مرجع وجود ندارد و cloneهای مرجع جزو deployment نیستند.
 - خروجی صفحهٔ سایت شامل `contentHtml` دادهٔ نامطمئن است؛ در Raw Article ذخیره می‌شود اما پیش از هر preview باید sanitize و در origin/CSP جدا نمایش داده شود.
-- deduplication در دیتابیس با unique index محدودهٔ `mediaId + sourceId + contentHash` enforce می‌شود.
+- deduplication سراسری در دیتابیس با unique index محدودهٔ `sourceId + contentHash` enforce می‌شود؛ توزیع به Media نیز با `mediaId + rawArticleId` یکتا است.
 
 یادداشت وابستگی: در 2026-09-27، audit یک advisory سطح moderate در ابزار migration توسعه (`drizzle-kit` و loader قدیمی esbuild) گزارش کرد. مسیر آسیب‌پذیر dev server در runtime محصول استفاده نمی‌شود. پیشنهاد `npm audit fix --force` به‌دلیل downgrade شکسته اعمال نشد؛ این مورد تا اصلاح upstream باید در هر ارتقا بازبینی شود و ابزار migration نباید روی host عمومی expose شود.

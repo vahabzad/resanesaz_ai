@@ -1,0 +1,7 @@
+import { CheckCircle2, Clock3, FileClock, XCircle } from "lucide-react";
+import type { MediaOverview } from "@/lib/contracts/media-overview";
+export function RequestStatus({ overview }: { overview: MediaOverview }) {
+  const request = overview.request;
+  const content = request.status === "pending" ? { title: "درخواست رسانه در انتظار تأیید است", text: "اطلاعات شما ثبت شده است. پس از بررسی سوپر ادمین، نتیجه همین‌جا نمایش داده می‌شود.", Icon: Clock3 } : request.status === "approved" ? { title: "درخواست رسانه تأیید شد", text: "وضعیت سایت و دسترسی منابع را در بخش‌های زیر دنبال کنید. دسترسی هر منبع جداگانه بررسی می‌شود.", Icon: CheckCircle2 } : request.status === "rejected" ? { title: "درخواست رسانه تأیید نشد", text: "یادداشت سوپر ادمین را بررسی کنید.", Icon: XCircle } : { title: "درخواست هنوز ارسال نشده است", text: "برای ارسال درخواست، مراحل ثبت رسانه را تکمیل کنید.", Icon: FileClock };
+  return <section className={`panel admin-request-hero ${request.status}`} aria-live="polite"><div className="admin-request-icon"><content.Icon size={28} /></div><div><span className="eyebrow">وضعیت درخواست رسانه</span><h2>{content.title}</h2><p>{content.text}</p>{request.submittedAt && <small>تاریخ ارسال: {new Date(request.submittedAt).toLocaleString("fa-IR", { timeZone: "Asia/Tehran" })}</small>}{request.reviewNote && <blockquote><b>یادداشت سوپر ادمین</b><p>{request.reviewNote}</p></blockquote>}</div></section>;
+}

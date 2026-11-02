@@ -1,75 +1,96 @@
-# معماری مفهومی
+# معماری اجرایی
 
-وضعیت: پیشنهادی و قابل بازنگری پس از تأیید داشبورد و قراردادهای MVP.
+وضعیت: پذیرفته‌شده بر اساس PRD نسخهٔ ۲ و ADR-0007 — ۱۴۰۵/۰۷/۱۱
+
+## ساختار مخزن
+
+```text
+front/                    Next.js، UI و composition صفحه‌ها
+back/                     Backend مستقل Node.js، دامنه، auth و دیتابیس
+  contracts/              قراردادهای TypeScript نسخه‌دار برای API
+  worker/                 process مستقل jobهای crawler و background
+references/ (خارج Git)    cloneهای read-only پروژه‌های آزمایشی
+```
+
+در ریشه فقط دو محدودهٔ توسعهٔ محصول وجود دارد: `front` و `back`. قراردادها و worker زیر Backend قرار دارند و deployableهای مستقلی هستند.
 
 ## نمای کلان
 
 ```text
-                     ┌──────────────────────┐
-                     │  Unified Dashboard   │
-                     └──────────┬───────────┘
-                                │
-                     ┌──────────▼───────────┐
-                     │ Control Plane / API  │
-                     │ media, users, policy │
-                     │ workflow, audit      │
-                     └─────┬─────┬─────┬────┘
-                           │     │     │
-             ┌─────────────┘     │     └──────────────┐
-             ▼                   ▼                    ▼
-     Crawler Adapter      Editorial Adapter     Publisher Adapters
-             │                   │              ┌──────┴─────────┐
-     CrawlerGenerator         sardabir          Websites     Bots/Social
-                                                     │
-                                         News-website-builder
+Browser
+  ↓
+front / Next.js
+  ↓ Versioned HTTP API
+back / Node.js API
+  ├── IAM / Platform Administration
+  ├── Media / Permission Management
+  ├── Crawler / Ingestion
+  ├── Editorial
+  ├── Site Builder
+  ├── Publication
+  └── Audit / Observability
+         ↓ durable jobs
+back/worker
+  ├── Crawl execution
+  └── Publication/background execution
 ```
 
-## مسئولیت هستهٔ مرکزی
+Next.js هیچ Route Handler کسب‌وکاری، دسترسی مستقیم دیتابیس، auth server یا worker داخلی ندارد. در توسعه، rewrite مسیر `/api/*` فقط نقش reverse proxy به Backend مستقل را دارد.
 
-- مرزبندی رسانه‌ها و عضویت کاربران
-- موجودیت‌های canonical و وضعیت workflow
-- صف‌های کار و orchestration
-- قرارداد و adapter برای بازوهای موجود
-- نسخه‌بندی سیاست تحریریه و محتوا
-- زمان‌بندی، idempotency و retry انتشار
-- Audit Log، health summary و notification داخلی
+## استفاده از پروژه‌های مرجع
 
-## مسئولیت بازوهای مرجع
+CrawlerGenerator، sardabir و News-website-builder محصول آزمایشی و منبع مطالعه‌اند، نه سرویس runtime یا dependency محصول.
 
-- News-website-builder: تولید/بازسازی خروجی سایت؛ نه احراز هویت مرکزی یا مدل Media
-- CrawlerGenerator: تولید recipe، اعتبارسنجی زنده و اجرای کراولر؛ نه مالکیت canonical خبر
-- sardabir: تولید و بازنویسی نسخهٔ خبر با سیاست تحریریه؛ نه workflow نهایی یا انتشار
-- Publisher adapters آینده: تبدیل rendition و ارتباط با API هر مقصد
+- clone آن‌ها بیرون از Git و deploy محصول نگه‌داری می‌شود؛
+- منطق، prompt، schema و آزمون‌های مفید خوانده و ارزیابی می‌شوند؛
+- قابلیت موردنیاز PRD در ماژول متناظر `back` بازطراحی و تست می‌شود؛
+- Backend هیچ درخواست HTTP، import یا وابستگی deployment به این مخزن‌ها ندارد؛
+- adapter فقط برای مرز خارجی واقعی مانند API شبکه اجتماعی یا سرویس ثالث استفاده می‌شود.
 
-## مسیر تکامل پیشنهادی
-
-برای شروع، هسته به‌صورت modular monolith با workerهای جدا برای کارهای طولانی مناسب‌تر از تقسیم زودهنگام به microservice است. مرز ماژول‌ها و قراردادهای job از ابتدا روشن می‌ماند تا در صورت نیاز بعداً مستقل شوند.
+## Scope و جریان ingestion
 
 ```text
-apps/dashboard     رابط RTL
-apps/api           API هسته
-apps/worker        jobهای crawler/editorial/publishing
-packages/contracts schema و type مشترک
-packages/ui        design system
-packages/adapters  اتصال به بازوها و مقصدها
+Platform Admin
+  → Source Catalog
+  → Crawler Definition / Version
+  → Crawl Run on Worker
+  → Platform Raw Article
+  → Media Source Subscription
+  → Media Inbox Item
+  → Story / Editorial / Publication
 ```
 
-این ساختار هنوز ایجاد نشده و فقط جهت معماری است.
+Source، crawler، run و Raw Article سراسری‌اند. یک run برای تمام Mediaهای subscriber کافی است. پس از ingestion، برای هر Subscription فعال یک Media Inbox Item ساخته می‌شود و تمام تصمیم‌های تحریریه از آن نقطه tenant-scoped هستند.
 
-## جریان داده و مالکیت
+## مسئولیت Backend
 
-- هسته مالک شناسه‌ها، وضعیت workflow و روابط دامنه است.
-- بازوها نتیجهٔ پردازش را از طریق قرارداد نسخه‌دار برمی‌گردانند.
-- فایل JSON تولیدشده توسط ابزارهای فعلی، integration contract نهایی نیست.
-- کارهای طولانی باید async باشند و progress event قابل نمایش تولید کنند.
-- فراخوانی‌های بیرونی باید correlation ID و نتیجهٔ قابل audit داشته باشند.
+- authentication، Platform/Media authorization و Permissionها؛
+- مدل canonical، migration و Data Access Layer؛
+- کاتالوگ Source، نسخه‌بندی crawler و scheduler؛
+- orchestration، idempotency، retry و Audit؛
+- sanitization، SSRF guard و validation تمام ورودی‌های خارجی؛
+- API نسخه‌دار مستقل از Frontend.
+
+## مسئولیت Frontend
+
+- تجربهٔ فارسی RTL، navigation و نمایش stateهای loading/empty/error/degraded؛
+- composition صفحات با کامپوننت‌های reusable؛
+- مصرف API نسخه‌دار و عدم بازتولید منطق دامنه یا authorization؛
+- عدم دسترسی به credential، دیتابیس یا مسیر محلی worker.
 
 ## اصول قراردادها
 
-- schema validation در هر مرز
-- versioning صریح event/payload
-- idempotency برای ingestion و publishing
-- timeout، retry محدود و dead-letter state
-- عدم ارسال credential به فرانت
-- عدم اعتماد به HTML، متن خبر یا خروجی مدل
+- schema validation در هر مرز؛
+- versioning صریح event و payload؛
+- `scopeType/scopeId` برای job و audit؛
+- idempotency برای ingestion و publishing؛
+- timeout، retry محدود، checkpoint و dead-letter state؛
+- correlation ID از API تا worker و نتیجه؛
+- عدم اعتماد به HTML، متن خبر، prompt مرجع یا خروجی مدل.
 
+
+## سایت داخلی و تحویل وب — فاز ۴
+
+Site Builder در Backend، spec محدود و اعتبارسنجی‌شده و lifecycle سایت را نگه می‌دارد. rendererهای ثبت‌شده در `front/components/sites` تنها قرارداد JSON نسخه‌دار را مصرف می‌کنند؛ کد مرجع یا کد آزاد مدل اجرا نمی‌شود. draft طراحی از live مستقل است و preview احراز هویت‌شده، iframe بدون script و CSP محدود دارد. سایت عمومی `/s/:slug` فقط snapshotهای commit‌شدهٔ انتشار را می‌خواند؛ کنترل توقف در هر خواندن اعمال می‌شود.
+
+`web_publication_job` و `site_article` مرز تحویل تحریریه به وب‌اند. کلید یکتای رسانه × سایت × نسخه درخواست تکراری را مهار می‌کند؛ رکورد سایت × خبر، URL ثابت را با نسخهٔ تازهٔ approved به‌روزرسانی می‌کند. worker بدون درخواست خارجی، claim با قفل و ثبت محتوا/نتیجه/audit را در یک تراکنش انجام می‌دهد. بنابراین قطع پیش از commit job را queued نگه می‌دارد و موفقیت نیمه‌کاره وجود ندارد. مجوز درخواست‌کننده و آخرین approval در همان تراکنش دوباره بررسی می‌شوند. تغییر زمان با CAS زمان قبلی و حفظ attempts انجام می‌شود. جزئیات در ADR-0020 ثبت شده‌اند.

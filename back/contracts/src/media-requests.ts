@@ -1,0 +1,4 @@
+export type MediaRequestStatus = "draft" | "pending" | "approved" | "rejected";
+export type MediaRequest = { mediaId: string; status: MediaRequestStatus; revision: number; submittedAt: string | null; reviewedAt: string | null; reviewNote: string | null };
+export type PlatformMediaRequest = MediaRequest & { mediaName: string; requestedBy: string | null; requesterEmail: string | null; sites: Array<{ name: string; slug: string; topics: string[]; audience: string[]; categories: string[]; style: string; notes: string }>; sources: Array<{ url: string; sourceType: string; categoryMode: string | null; categories: Array<{ id: string; name: string | null }> }>; editors: string[] };
+export type MediaRequestsWorkspace = { rows: PlatformMediaRequest[]; pending: number; page: number; pageCount: number; total: number };

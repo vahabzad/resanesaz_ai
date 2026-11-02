@@ -1,0 +1,25 @@
+{
+  "name": "@media/contracts",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./sites": "./src/sites.ts",
+    "./editorial-settings": "./src/editorial-settings.ts",
+    "./context": "./src/context.ts",
+    "./inbox": "./src/inbox.ts",
+    "./sources": "./src/sources.ts",
+    "./codex": "./src/codex.ts",
+    "./platform-articles": "./src/platform-articles.ts",
+    "./platform-admins": "./src/platform-admins.ts",
+    "./media": "./src/media.ts",
+    "./media-setup": "./src/media-setup.ts"
+  },
+  "scripts": {
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,1 @@
+ALTER TABLE "source" ADD COLUMN "media_delivery_enabled" boolean DEFAULT true NOT NULL;

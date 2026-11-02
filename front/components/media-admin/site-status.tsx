@@ -1,0 +1,6 @@
+import { ExternalLink, Globe2 } from "lucide-react";
+import type { MediaOverview } from "@/lib/contracts/media-overview";
+export function SiteStatus({ overview }: { overview: MediaOverview }) {
+  const labels = { waiting_approval: "منتظر تأیید رسانه", not_started: "ساخت سایت هنوز آغاز نشده است", live: "سایت آماده و در دسترس است", paused: "نمایش سایت متوقف شده است", archived: "سایت بایگانی شده است" };
+  return <section className="panel admin-site-status"><div className="admin-section-title"><Globe2 size={20} /><div><h2>سایت رسانه</h2><p>وضعیت سایت و لینک مشاهدهٔ آن</p></div></div>{overview.sites.length ? overview.sites.map(site => <article className="admin-site-row" key={site.id}><div><b>{site.name}</b><span>{labels[site.status]}</span></div>{site.publicPath && <a className="primary-button" href={site.publicPath} target="_blank" rel="noreferrer">مشاهدهٔ سایت<ExternalLink size={15} /></a>}</article>) : <p className="admin-empty">{overview.request.status === "approved" ? "هنوز سایتی برای این رسانه ساخته نشده است." : "پس از تأیید درخواست رسانه، وضعیت ساخت سایت در این بخش نمایش داده می‌شود."}</p>}<small className="admin-phase-note">تنظیمات و تغییر طراحی سایت در فاز دوم اضافه می‌شود.</small></section>;
+}

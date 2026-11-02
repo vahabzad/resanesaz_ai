@@ -1,0 +1,1 @@
+ALTER TABLE "publication_rule" ADD COLUMN "last_error_code" text;

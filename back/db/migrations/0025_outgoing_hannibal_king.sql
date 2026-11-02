@@ -1,0 +1,3 @@
+ALTER TABLE "source_access_request" ADD COLUMN "kind" text DEFAULT 'source_access' NOT NULL;--> statement-breakpoint
+ALTER TABLE "source_access_request" ADD COLUMN "subscription_id" text;--> statement-breakpoint
+ALTER TABLE "source_access_request" ADD CONSTRAINT "source_access_request_subscription_id_media_source_subscription_id_fk" FOREIGN KEY ("subscription_id") REFERENCES "public"."media_source_subscription"("id") ON DELETE set null ON UPDATE no action;

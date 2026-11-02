@@ -1,0 +1,2 @@
+export { editorialLanguages, socialOutputFormats, defaultSocialOutput, defaultEditorialInstructions, defaultPlatformEditorialInstructions, defaultSocialInstructions } from "../../../back/contracts/src/editorial-settings";
+export type { EditorialLanguage, EditorialFaction, PlatformEditorialConfig, SectionSettings, ManagedSection, EditorialSettingsSnapshot, SocialOutputSettings } from "../../../back/contracts/src/editorial-settings";

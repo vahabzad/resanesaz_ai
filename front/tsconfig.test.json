@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "target": "ES2020",
+    "outDir": ".data/component-test-build",
+    "incremental": false,
+    "plugins": []
+  },
+  "include": [
+    "components/sites/news-site.tsx",
+    "lib/contracts/sites.ts",
+    "lib/site-seo.ts",
+    "lib/editorial-prompt-presets.ts",
+    "components/platform/source-run-status.tsx",
+    "components/platform/crawler-build-report.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    ".next"
+  ]
+}
