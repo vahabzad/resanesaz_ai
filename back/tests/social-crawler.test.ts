@@ -10,6 +10,28 @@ import { CrawlerOperationError } from "../src/social/engine/domain/operations/ty
 import { parseEitaaBatch } from "../src/social/engine/domain/crawl/platforms/eitaa/crawler/EitaaParser";
 import AparatCrawler from "../src/social/engine/domain/crawl/platforms/aparat/crawler/AparatCrawler";
 import { sourceRequestKey } from "../contracts/src/media-setup";
+import { socialSourceName } from "../src/social/source-name";
+import type { CrawlerChannelCrawlResult } from "../src/social/engine/domain/crawl/types/Crawler.types";
+
+test("social source names use channel identity and preserve administrator names", () => {
+  assert.equal(socialSourceName("t.me", "https://t.me/jarian_com", "telegram"), "@jarian_com");
+  assert.equal(socialSourceName("ble.ir", "https://ble.ir/gizmiztel", "bale", "گیزمیز"), "گیزمیز");
+  assert.equal(socialSourceName("نام انتخابی", "https://t.me/example", "telegram", "نام استخراجی"), "نام انتخابی");
+  assert.equal(socialSourceName("@example", "https://t.me/example", "telegram", "کانال واقعی"), "کانال واقعی");
+});
+
+test("textless Telegram service items are skipped without failing usable news", async () => {
+  const result = await runSocialCrawler("telegram", "https://t.me/example", new AbortController().signal, undefined, async () => ({
+    async crawlChannel(): Promise<CrawlerChannelCrawlResult> { return { profile: { platformKey: "telegram", address: "example", title: "کانال واقعی" }, messages: [
+      { platformKey: "telegram", externalId: "10", text: "خبر قابل استفاده" },
+      { platformKey: "telegram", externalId: "4295077283.0001", text: "" },
+    ] }; },
+    async close() {},
+  }));
+  assert.equal(result.articles.length, 1);
+  assert.equal(result.failed, 0);
+  assert.equal(result.sourceTitle, "کانال واقعی");
+});
 
 test("all thirteen browser extractors load without the reference application", async () => {
   for (const platform of socialPlatformKeys) {

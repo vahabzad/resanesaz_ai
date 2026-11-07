@@ -24,7 +24,7 @@ test("social validation and ingestion bypass AI, keep platform scope, deduplicat
     validate: async platform => {
       validations++;
       const report = { passed: true, checkedAt: new Date().toISOString(), discovered: 1, samples: [{ url: fixtureArticle.url, title: fixtureArticle.title, contentLength: 25, passed: true, errorCode: null }], attempts: 1 };
-      return { config: { platform, runtime: "browser", adapterVersion: 1, contractVersion: "2", validation: report }, report };
+      return { config: { platform, runtime: "browser", adapterVersion: 1, contractVersion: "2", validation: report, sourceTitle: "عنوان واقعی کانال" }, report };
     },
     run: async () => { runs++; return { articles: [fixtureArticle], discovered: 1, failed: 0 }; },
   };
@@ -37,6 +37,7 @@ test("social validation and ingestion bypass AI, keep platform scope, deduplicat
     assert.equal(createdSource.enabled, false);
     assert.equal((await runCrawlWorkerCycle(1, noAi, adapters)).results[0].status, "succeeded");
     assert.equal(validations, 1);
+    assert.equal((await database.select().from(schema.source).where(eq(schema.source.id, created.sourceId)))[0].name, "کانال", "explicit administrator name is preserved");
     assert.equal((await database.select().from(schema.rawArticle)).length, 0, "validation samples must not enter Inbox");
     for (const id of ["one", "two", "disabled"]) await database.insert(schema.mediaSourceSubscription).values({ id: `sub-${id}`, mediaId: id, sourceId: created.sourceId, enabled: id !== "disabled" });
     const run = await enqueueSourceRun({ sourceId: created.sourceId, actorUserId: "admin", correlationId: "social-run", trigger: "manual" });
@@ -71,5 +72,9 @@ test("social validation and ingestion bypass AI, keep platform scope, deduplicat
     } });
     assert.equal(stopped.results[0].errorCode, "USER_CANCELLED");
     assert.equal((await database.select().from(schema.rawArticle)).length, 1, "late extraction after stop must never persist");
+    const generic = await createPlatformSource({ actorUserId: "admin", correlationId: "social-name", name: "t.me", adapterKey: "telegram", url: "https://t.me/another", scheduleMinutes: 15 }, async url => new URL(url));
+    assert.equal((await database.select().from(schema.source).where(eq(schema.source.id, generic.sourceId)))[0].name, "@another");
+    await runCrawlWorkerCycle(1, noAi, adapters);
+    assert.equal((await database.select().from(schema.source).where(eq(schema.source.id, generic.sourceId)))[0].name, "عنوان واقعی کانال");
   } finally { await client.close(); }
 });

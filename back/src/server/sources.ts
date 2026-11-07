@@ -1,5 +1,6 @@
 import type { SourceAdapter } from "@media/contracts/social-platforms";
 import { isSocialPlatform, normalizeSocialSource } from "../social/platforms";
+import { socialSourceName } from "../social/source-name";
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, inArray, isNull, isNotNull, max } from "drizzle-orm";
 
@@ -40,7 +41,7 @@ export async function getPlatformSourcesWorkspace(): Promise<PlatformSourcesWork
   }).from(crawlRun).innerJoin(source, eq(source.id, crawlRun.sourceId)).orderBy(desc(crawlRun.createdAt)).limit(30);
   return {
     sources: rows.map((row) => ({
-      id: row.id, name: row.name, url: row.url, adapterKey: row.adapterKey as SourceAdapter,
+      id: row.id, name: socialSourceName(row.name, row.url, row.adapterKey), url: row.url, adapterKey: row.adapterKey as SourceAdapter,
       status: row.status as SourceStatus, enabled: row.enabled, executionBlocked: false,
       scheduleMinutes: row.scheduleMinutes, lastErrorCode: row.lastErrorCode,
       visibleToMedia: row.visibleToMedia, mediaDeliveryEnabled: row.mediaDeliveryEnabled, archivedAt: row.archivedAt?.toISOString() ?? null,
@@ -163,7 +164,7 @@ export async function createPlatformSource(input: {
   const versionId = `crawler_version_${randomUUID()}`;
   const runId = `crawl_run_${randomUUID()}`;
   await db.transaction(async (transaction) => {
-    await transaction.insert(source).values({ id: sourceId, name: input.name, url: safeUrl.toString(), adapterKey: input.adapterKey, scheduleMinutes: input.scheduleMinutes, createdBy: input.actorUserId, enabled: false, status: "building" });
+    await transaction.insert(source).values({ id: sourceId, name: socialSourceName(input.name, safeUrl.toString(), input.adapterKey), url: safeUrl.toString(), adapterKey: input.adapterKey, scheduleMinutes: input.scheduleMinutes, createdBy: input.actorUserId, enabled: false, status: "building" });
     await transaction.insert(crawlerDefinition).values({ id: definitionId, sourceId, adapterKey: input.adapterKey });
     await transaction.insert(crawlerVersion).values({
       id: versionId, definitionId, version: 1, status: "draft",

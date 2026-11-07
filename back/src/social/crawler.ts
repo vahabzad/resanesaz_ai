@@ -7,7 +7,7 @@ import type { CrawlerChannel, CrawlerChannelCrawlResult, CrawlerMessage } from "
 import { PartialCrawlerExtractionError } from "./engine/domain/crawl/types/PartialCrawlerExtractionError";
 
 type Crawler = { crawlChannel(channel: CrawlerChannel): Promise<CrawlerChannelCrawlResult>; close(): Promise<void> };
-export type SocialResult = { articles: Array<CrawledArticle & { externalId: string }>; discovered: number; failed: number };
+export type SocialResult = { articles: Array<CrawledArticle & { externalId: string }>; discovered: number; failed: number; sourceTitle?: string | null };
 type Progress = (event: Record<string, unknown>) => Promise<void> | void;
 export async function createSocialCrawler(platform: SocialPlatform): Promise<Crawler> {
   switch (platform) {
@@ -93,7 +93,11 @@ export async function runSocialCrawler(platform: SocialPlatform, input: string, 
       if (!result.messages.length && !result.profile) throw new SocialCrawlerError("SOCIAL_EMPTY_RESULT");
       const messages = result.messages.slice(0, 500);
       const articles = [...new Map(messages.flatMap(message => { const article = socialMessageArticle(platform, sourceUrl, message); return article ? [[article.externalId, article] as const] : []; })).values()];
-      return { articles, discovered: messages.length, failed: (incomplete || result.extractionIncomplete ? 1 : 0) + messages.filter(message => !socialMessageArticle(platform, sourceUrl, message)).length };
+      const rejected = messages.filter(message => !socialMessageArticle(platform, sourceUrl, message));
+      // Media-only and service messages have no news text; skipping them is expected.
+      const invalid = rejected.filter(message => text(message.text, 100_000) || text(record(message.raw).caption, 100_000) || text(record(message.raw).title, 100_000) || text(record(message.raw).description, 100_000));
+      await progress?.({ stage: "social-browser", status: incomplete || result.extractionIncomplete || invalid.length ? "warning" : "completed", message: `دریافت ${messages.length} پیام؛ ${articles.length} خبر قابل استفاده، ${rejected.length - invalid.length} پیام بدون متن کنار گذاشته شد، ${invalid.length} پیام نامعتبر؛ دریافت ${incomplete || result.extractionIncomplete ? "ناقص" : "تکمیل"} شد.` });
+      return { articles, discovered: messages.length, failed: (incomplete || result.extractionIncomplete ? 1 : 0) + invalid.length, sourceTitle: text(result.profile?.title, 200) };
     } finally {
       if (abortHandler) combined.removeEventListener("abort", abortHandler);
       await Promise.race([crawler.close().catch(() => {}), new Promise(resolve => { const timer = setTimeout(resolve, 3000); timer.unref(); })]);
@@ -106,5 +110,5 @@ export async function validateSocialCrawler(platform: SocialPlatform, url: strin
     passed: result.articles.length > 0 && result.failed === 0, checkedAt: new Date().toISOString(), discovered: result.discovered, attempts: 1,
     samples: result.articles.slice(0, 10).map(article => ({ url: article.url, title: article.title, contentLength: article.content?.length ?? 0, passed: true, errorCode: null })),
   };
-  return { config: { platform, runtime: "browser", adapterVersion: 1, contractVersion: "2", validation: report }, report };
+  return { config: { platform, runtime: "browser", adapterVersion: 1, contractVersion: "2", validation: report, ...(result.sourceTitle ? { sourceTitle: result.sourceTitle } : {}) }, report };
 }

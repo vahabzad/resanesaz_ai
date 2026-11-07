@@ -476,10 +476,13 @@ export default class TelegramWebCrawler {
         scrollProgress = await this.scrollToOlderMessages(page, scroll + 1);
       }
     } catch (error) { extractionFailure = error; }
-    if (!reachedCutoff && !extractionFailure) {
+    if (!reachedCutoff && !extractionFailure && stopReason !== 'scroll-limit') {
       extractionFailure = new CrawlerOperationError('Telegram history stopped before reaching the requested time boundary', 'EXTRACTION_FAILED', 'history-scroll', 'warning', {
         stopReason, sinceDate: sinceDate.toISOString(), itemsFetched: collected.size, maxScrolls, noNewCount,
       });
+    }
+    if (!reachedCutoff && !extractionFailure && stopReason === 'scroll-limit') {
+      await this.reportProgress(channel, { eventCode: 'HISTORY_BATCH_LIMIT_REACHED', stage: 'extraction', level: 'warning', message: 'Telegram bounded history batch completed; older messages remain outside this batch' });
     }
     const normalized = normalizeTelegramViews([...collected.values()].sort((a, b) => a.timestamp - b.timestamp));
     const observedReactionKeys = new Set(normalized.flatMap((message) => Object.keys(message.reactions)));

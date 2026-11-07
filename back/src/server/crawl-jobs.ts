@@ -1,6 +1,7 @@
 import { isSocialBrowserBusy } from "../social/browser-runtime";
 import { isSocialPlatform, SocialCrawlerError } from "../social/platforms";
 import { runSocialCrawler, validateSocialCrawler } from "../social/crawler";
+import { socialSourceName } from "../social/source-name";
 import { CrawlerOperationError } from "../social/engine/domain/operations/types/Operations.types";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lt, isNull, sql } from "drizzle-orm";
@@ -210,7 +211,8 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
         if (!currentSource) throw new Error("USER_CANCELLED");
         const [completed] = await transaction.update(crawlRun).set({ status: "succeeded", discoveredCount: result.report.discovered, failedCount: 0, finishedAt }).where(and(eq(crawlRun.id, run.id), eq(crawlRun.status, "running"))).returning();
         if (!completed) throw new Error("USER_CANCELLED");
-        const [enabled] = await transaction.update(source).set({ enabled: true, status: "active", lastErrorCode: null, updatedAt: finishedAt }).where(and(eq(source.id, run.sourceId), isNull(source.archivedAt))).returning();
+        const sourceTitle = "sourceTitle" in result.config && typeof result.config.sourceTitle === "string" ? result.config.sourceTitle : null;
+        const [enabled] = await transaction.update(source).set({ name: socialSourceName(currentSource.name, currentSource.url, currentSource.adapterKey, sourceTitle), enabled: true, status: "active", lastErrorCode: null, updatedAt: finishedAt }).where(and(eq(source.id, run.sourceId), isNull(source.archivedAt))).returning();
         if (!enabled) throw new Error("USER_CANCELLED");
         const [version] = await transaction.select().from(crawlerVersion).where(eq(crawlerVersion.id, run.crawlerVersionId));
         await transaction.update(crawlerVersion).set({ status: "retired" }).where(and(eq(crawlerVersion.definitionId, version.definitionId), eq(crawlerVersion.status, "active")));
@@ -323,6 +325,10 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
       .where(and(eq(crawlRun.id, run.id), eq(crawlRun.status, "running")))
       .returning();
     if (!completed.length) return { status: "failed" as const, runId: run.id, errorCode: "USER_CANCELLED" };
+    if (social?.sourceTitle) {
+      const [current] = await db.select().from(source).where(eq(source.id, run.sourceId));
+      if (current) await db.update(source).set({ name: socialSourceName(current.name, current.url, current.adapterKey, social.sourceTitle) }).where(and(eq(source.id, run.sourceId), eq(source.name, current.name)));
+    }
     await db.update(source).set({ status: sourceStatus, lastRunAt: finishedAt, ...(completelyFailed ? {} : { lastSuccessAt: finishedAt }), lastErrorCode: errorCode, updatedAt: finishedAt })
       .where(eq(source.id, run.sourceId));
     await recordAuditEvent({
