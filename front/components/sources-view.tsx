@@ -154,7 +154,7 @@ export function SourcesView({ workspace, role }: { workspace: SourcesWorkspace; 
             <div className="sources-table-body">
               {workspace.sources.map((item) => (
                 <article className="source-row" key={item.id}>
-                  <div className="source-identity"><span>{item.adapterKey === "web" ? <Globe2 size={18} /> : <Rss size={18} />}</span><div><b>{item.name}</b><a href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).hostname}<ExternalLink size={11} /></a></div></div>
+                  <div className="source-identity"><span>{item.adapterKey === "rss" ? <Rss size={18} /> : <Globe2 size={18} />}</span><div><b>{item.name}</b><a href={item.url} target="_blank" rel="noreferrer">{new URL(item.url).hostname}<ExternalLink size={11} /></a></div></div>
                   <div><span className={`source-health ${item.status}`}><i />{statusLabel(item.status)}</span><small>هر {item.scheduleMinutes.toLocaleString("fa-IR")} دقیقه</small></div>
                   <div className="source-time"><b>{formatDate(item.lastRunAt)}</b><small>{item.lastErrorCode ? `کد خطا: ${item.lastErrorCode}` : "اجرای زمان‌بندی‌شده"}</small></div>
                   <div className="source-output"><b>{item.articleCount.toLocaleString("fa-IR")}</b><small>خبر یکتا</small></div>

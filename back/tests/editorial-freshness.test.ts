@@ -1,0 +1,124 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { PGlite } from "@electric-sql/pglite";
+import { drizzle } from "drizzle-orm/pglite";
+import { migrate } from "drizzle-orm/pglite/migrator";
+import { eq } from "drizzle-orm";
+import * as schema from "../db/schema";
+import { automaticInputRejection, resumedAutomaticSettings } from "../src/editorial-freshness";
+import { defaultAutomaticFreshness, type SectionSettings } from "../contracts/src/editorial-settings";
+
+test("automatic freshness uses publication age, inclusive boundaries and explicit unknown/resume policies", () => {
+  const settings: SectionSettings = { factionId: null, viewpointStrength: 0, humor: 0, formality: 50, sourceIds: [], categories: [] };
+  const now = new Date("2026-11-03T12:00:00Z");
+  const article = { ingestedAt: now, publishedAt: new Date("2026-11-03T06:00:00Z") };
+  assert.equal(automaticInputRejection(settings, article, now), null);
+  assert.equal(automaticInputRejection(settings, { ...article, publishedAt: new Date(article.publishedAt.getTime() - 1) }, now), "AUTO_NEWS_EXPIRED");
+  assert.equal(automaticInputRejection(settings, { ...article, publishedAt: null }, now), "AUTO_DATE_UNKNOWN");
+  const received: SectionSettings = { ...settings, autoFreshness: { ...defaultAutomaticFreshness, unknownDatePolicy: "received" } };
+  assert.equal(automaticInputRejection(received, { ingestedAt: now, publishedAt: null }, now), null);
+  assert.equal(automaticInputRejection(received, { ingestedAt: new Date("2026-11-01"), publishedAt: null }, now), "AUTO_NEWS_EXPIRED");
+  assert.equal(automaticInputRejection(received, { ingestedAt: now, publishedAt: new Date("2026-11-01") }, now), "AUTO_NEWS_EXPIRED", "reingestion cannot refresh a published old article");
+  const unlimited: SectionSettings = { ...received, autoFreshness: { ...received.autoFreshness!, maxAgeHours: null } };
+  assert.equal(automaticInputRejection(unlimited, { ...article, publishedAt: new Date("2020-01-01") }, now), null);
+  assert.equal(automaticInputRejection(unlimited, { ...article, publishedAt: new Date(now.getTime() + 1) }, now), "AUTO_DATE_FUTURE");
+  const future = { ...settings, autoReceivedSince: "2099-01-01T00:00:00Z" };
+  assert.equal(resumedAutomaticSettings(future, now).autoReceivedSince, "2099-01-01T00:00:00.000Z", "resume cannot weaken a later explicit anchor");
+  assert.equal(resumedAutomaticSettings(settings, now).autoReceivedSince, now.toISOString());
+  const continuing: SectionSettings = { ...settings, autoReceivedSince: "2026-01-01T00:00:00Z", autoFreshness: { ...defaultAutomaticFreshness, resumeMode: "continue" } };
+  assert.equal(resumedAutomaticSettings(continuing, now).autoReceivedSince, continuing.autoReceivedSince);
+});
+
+test("admin saves per-editor freshness; queue, execution and late output enforce it without restricting manual work", async t => {
+  process.env.DATABASE_DRIVER = "pglite"; process.env.PGLITE_DATA_DIR = "unused-freshness-test"; process.env.BETTER_AUTH_SECRET = "test-only-freshness-secret-with-at-least-32-characters";
+  const client = new PGlite(); globalThis.__mediaCommandPglite = client;
+  const database = drizzle({ client, schema }); await migrate(database, { migrationsFolder: "./db/migrations" });
+  const { auth } = await import("../src/server/auth");
+  const { handleApiRequest } = await import("../src/router");
+  const { getSectionCandidates } = await import("../src/server/editorial-settings");
+  const { enqueueEditorialJob, runEditorialWorkerCycle } = await import("../src/server/editorial-jobs");
+  let user = "admin";
+  t.mock.method(auth.api, "getSession", async () => ({ user: { id: user, name: user, email: `${user}@test.example` }, session: { activeOrganizationId: user === "other" ? "m2" : "m1" } }));
+  const request = (path: string, body?: unknown, method = body ? "POST" : "GET") => handleApiRequest(new Request(`http://local.test/api/v1/editorial${path}`, { method, headers: { "content-type": "application/json" }, body: body ? JSON.stringify(body) : undefined }));
+  const data = async (response: Response, status = 200) => { assert.equal(response.status, status, await response.clone().text()); return (await response.json()).data; };
+  const actor = { mediaId: "m1", actorUserId: "admin", correlationId: "freshness" };
+  const body = "متن کامل خبر با اطلاعات منبع برای بازنویسی و بررسی تحریریه. ".repeat(8);
+  try {
+    await database.insert(schema.user).values(["admin", "other", "viewer"].map(id => ({ id, name: id, email: `${id}@test.example` })));
+    await database.insert(schema.media).values(["m1", "m2"].map(id => ({ id, name: id, slug: id, createdAt: new Date() })));
+    await database.insert(schema.membership).values([["admin", "m1", "admin"], ["viewer", "m1", "viewer"], ["other", "m2", "owner"]].map(([userId, organizationId, role]) => ({ id: userId, userId, organizationId, role, createdAt: new Date() })));
+    await database.insert(schema.source).values({ id: "src", name: "Source", url: "https://source.test/", adapterKey: "web", enabled: false, status: "paused" });
+    await database.insert(schema.crawlerDefinition).values({ id: "def", sourceId: "src", adapterKey: "web" });
+    await database.insert(schema.crawlerVersion).values({ id: "cv", definitionId: "def", version: 1, config: {} });
+    await database.insert(schema.crawlRun).values({ id: "run", sourceId: "src", crawlerVersionId: "cv", correlationId: "test", status: "succeeded" });
+    await database.insert(schema.mediaSourceSubscription).values({ id: "sub", mediaId: "m1", sourceId: "src" });
+    const settings = { factionId: null, viewpointStrength: 0, humor: 0, formality: 50, sourceIds: ["src"], categories: [] };
+    let section = await data(await request("/sections", { name: "Fresh editor", settings, autoEnabled: true, autoIntervalMinutes: 1440 }), 201);
+    assert.deepEqual(section.settings.autoFreshness, defaultAutomaticFreshness);
+    const patch = (overrides: Record<string, unknown> = {}) => request(`/sections/${section.id}`, { name: section.name, settings: section.settings, expectedRevision: section.revision, archived: false, paused: section.paused, autoEnabled: section.autoEnabled, autoIntervalMinutes: 1440, ...overrides }, "PATCH");
+    const article = async (id: string, publishedAt: Date | null, ingestedAt = new Date()) => {
+      await database.insert(schema.rawArticle).values({ id, sourceId: "src", crawlRunId: "run", title: id, content: body, canonicalUrl: `https://source.test/${id}`, contentHash: id, ingestedAt, publishedAt });
+      await database.insert(schema.mediaInboxItem).values({ id: `inbox-${id}`, mediaId: "m1", rawArticleId: id });
+    };
+    const now = Date.now();
+    await article("fresh", new Date(now - 3600000)); await article("old", new Date(now - 48 * 3600000)); await article("unknown", null);
+    // Invalid recent inputs must be filtered in SQL before the 50-row limit.
+    for (let index = 0; index < 51; index++) await article(`future-${index}`, new Date(now + 86400000));
+    assert.deepEqual((await getSectionCandidates("m1", section.id, true)).map(row => row.id), ["fresh"]);
+    await assert.rejects(enqueueEditorialJob(actor, section.id, "old", "automatic"), /سن خبر/);
+    await assert.rejects(enqueueEditorialJob(actor, section.id, "unknown", "automatic"), /تاریخ انتشار/);
+    const freshJob = await enqueueEditorialJob(actor, section.id, "fresh", "automatic");
+    await database.update(schema.rawArticle).set({ publishedAt: new Date(now - 8 * 3600000) }).where(eq(schema.rawArticle.id, "fresh"));
+    let calls = 0;
+    const output = async (input: { sourceKey: string }) => { calls++; return { title: "عنوان خبر", lead: "چکیده", body, sourceKeys: [input.sourceKey], reviewRequired: false }; };
+    await runEditorialWorkerCycle(output);
+    assert.equal(calls, 0, "expired queued news must not call the model");
+    let job = (await database.select().from(schema.editorialJob).where(eq(schema.editorialJob.id, freshJob.id!)))[0];
+    assert.equal(job.status, "cancelled"); assert.equal(job.errorCode, "AUTO_NEWS_EXPIRED");
+    await enqueueEditorialJob(actor, section.id, "old"); await runEditorialWorkerCycle(output);
+    assert.equal((await database.select().from(schema.editorialStory)).length, 1, "manual archival work remains allowed");
+    await article("ages-during-rewrite", new Date());
+    const late = await enqueueEditorialJob(actor, section.id, "ages-during-rewrite", "automatic");
+    await runEditorialWorkerCycle(async input => {
+      await database.update(schema.rawArticle).set({ publishedAt: new Date(now - 8 * 3600000) }).where(eq(schema.rawArticle.id, "ages-during-rewrite"));
+      return output(input);
+    });
+    job = (await database.select().from(schema.editorialJob).where(eq(schema.editorialJob.id, late.id!)))[0];
+    assert.equal(job.status, "cancelled"); assert.equal(job.errorCode, "AUTO_NEWS_EXPIRED");
+    assert.equal((await database.select().from(schema.editorialStory)).length, 1, "a late expired response cannot create a story");
+    section = await data(await patch({ settings: { ...section.settings, autoFreshness: { ...defaultAutomaticFreshness, unknownDatePolicy: "received" } } }));
+    const unknown = await enqueueEditorialJob(actor, section.id, "unknown", "automatic");
+    await runEditorialWorkerCycle(async input => {
+      section = await data(await patch({ settings: { ...section.settings, autoFreshness: defaultAutomaticFreshness } }));
+      return output(input);
+    });
+    job = (await database.select().from(schema.editorialJob).where(eq(schema.editorialJob.id, unknown.id!)))[0];
+    assert.equal(job.status, "cancelled"); assert.equal(job.errorCode, "AUTO_FRESHNESS_CHANGED");
+    section = await data(await request(`/sections/${section.id}/stop`, { expectedRevision: section.revision }));
+    await article("during-stop", new Date(), new Date(Date.now() - 1000));
+    await assert.rejects(enqueueEditorialJob(actor, section.id, "during-stop"), /متوقف/);
+    const beforeResume = Date.now();
+    section = await data(await request(`/sections/${section.id}/resume`, { expectedRevision: section.revision }));
+    assert.ok(Date.parse(section.settings.autoReceivedSince) >= beforeResume);
+    await assert.rejects(enqueueEditorialJob(actor, section.id, "during-stop", "automatic"), /نقطهٔ شروع/);
+    await article("after-resume", new Date());
+    assert.deepEqual((await getSectionCandidates("m1", section.id, true)).map(row => row.id), ["after-resume"]);
+    section = await data(await patch({ autoEnabled: false }));
+    const beforeEnable = Date.now(); section = await data(await patch({ autoEnabled: true }));
+    assert.ok(Date.parse(section.settings.autoReceivedSince) >= beforeEnable, "turning automatic mode back on also resets the anchor");
+    section = await data(await patch({ settings: { ...section.settings, autoReceivedSince: null, autoFreshness: { maxAgeHours: null, unknownDatePolicy: "received", resumeMode: "continue" } } }));
+    section = await data(await request(`/sections/${section.id}/stop`, { expectedRevision: section.revision }));
+    section = await data(await request(`/sections/${section.id}/resume`, { expectedRevision: section.revision }));
+    assert.equal(section.settings.autoReceivedSince, null);
+    const workspace = await data(await request(""));
+    assert.deepEqual(workspace.sections.find((row: { id: string }) => row.id === section.id).settings.autoFreshness, { maxAgeHours: null, unknownDatePolicy: "received", resumeMode: "continue" });
+    // Even older clients cannot erase a saved freshness policy by omitting it.
+    section = await data(await patch({ settings })); assert.equal(section.settings.autoFreshness.maxAgeHours, null);
+    await article("old-explicitly-allowed", new Date("2020-01-01"));
+    assert.ok((await getSectionCandidates("m1", section.id, true)).some(row => row.id === "old-explicitly-allowed"));
+    for (const maxAgeHours of [0, -1, 721, 1.5]) await data(await patch({ settings: { ...section.settings, autoFreshness: { ...defaultAutomaticFreshness, maxAgeHours } } }), 400);
+    await data(await patch({ settings: { ...section.settings, autoFreshness: { ...defaultAutomaticFreshness, resumeMode: "invalid" } } }), 400);
+    user = "viewer"; await data(await patch(), 403); user = "other"; await data(await patch(), 404);
+    assert.equal((await database.select().from(schema.editorialSection)).filter(row => row.mediaId === "m2").length, 0);
+  } finally { await client.close(); globalThis.__mediaCommandPglite = undefined; }
+});

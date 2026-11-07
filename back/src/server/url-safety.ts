@@ -11,7 +11,7 @@ export class UnsafeSourceUrlError extends Error {
   }
 }
 
-async function resolvePublicHttpsUrl(input: string) {
+export async function resolvePublicHttpsUrl(input: string) {
   let url: URL;
   try {
     url = new URL(input);

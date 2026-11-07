@@ -3,6 +3,7 @@
 import { useId } from "react";
 import type { SourceAccessInput } from "@/lib/contracts/media-setup";
 import type { PlatformCategory } from "@/lib/contracts/platform-categories";
+import { SocialSourceFields } from "./social-source-fields";
 
 export function SourceInputFields({ value, categories, disabled = false, onChange }: {
   value: SourceAccessInput; categories: PlatformCategory[]; disabled?: boolean; onChange: (value: SourceAccessInput) => void;
@@ -18,7 +19,7 @@ export function SourceInputFields({ value, categories, disabled = false, onChang
   }
   return <fieldset className="source-input-fields" disabled={disabled}>
     <fieldset className="media-source-type-choice"><legend>نوع منبع</legend>{([ ["website", "وب‌سایت"], ["social", "شبکهٔ اجتماعی"] ] as const).map(([type, label]) => <label className={value.sourceType === type ? "selected" : ""} key={type}><input type="radio" name={`${id}-type`} checked={value.sourceType === type} onChange={() => onChange(type === "website" ? { sourceType: type, url: value.url, categoryMode: "all", categoryIds: [] } : { sourceType: type, url: value.url })} />{label}</label>)}</fieldset>
-    <label className="media-source-link-field">لینک منبع<input type="url" required maxLength={2048} pattern="https://.*" value={value.url} onChange={event => onChange({ ...value, url: event.target.value })} placeholder={value.sourceType === "website" ? "لینک وب‌سایت خبری را وارد کنید؛ مثل https://example.com" : "لینک کانال یا صفحهٔ شبکهٔ اجتماعی را وارد کنید"} dir="ltr" /></label>
+    {value.sourceType === "social" ? <SocialSourceFields value={value} onChange={onChange} /> : <label className="media-source-link-field">لینک منبع<input type="url" required maxLength={2048} pattern="https://.*" value={value.url} onChange={event => onChange({ ...value, url: event.target.value })} placeholder="لینک وب‌سایت خبری را وارد کنید؛ مثل https://example.com" dir="ltr" /></label>}
     {value.sourceType === "website" && <div className="media-source-category-choice"><b>دسته‌بندی خبرهای این منبع</b><p>انتخاب این بخش فقط برای همین منبع است.</p><div className="media-source-category-options">
       <label className="media-source-all-categories"><input type="checkbox" checked={all} disabled={!categories.length} onChange={event => onChange({ ...value, categoryMode: event.target.checked ? "all" : "selected", categoryIds: [] })} /><span>همهٔ دسته‌ها</span></label>
       {categories.map(category => <label key={category.id}><input type="checkbox" checked={selected.includes(category.id)} onChange={() => toggle(category.id)} /><span>{category.nameFa}</span></label>)}

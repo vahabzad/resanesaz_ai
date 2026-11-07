@@ -8,7 +8,7 @@
 | Media | Platform | یک برند یا تحریریهٔ مستقل | مرز اصلی جداسازی داده‌های تحریریه و انتشار |
 | Membership | Media | عضویت کاربر در یک رسانه همراه preset نقش و Permissionهای مؤثر | User × Media |
 | Permission Grant | Media | مجوز داده‌محور یک کاربر برای عملیات مشخص | اعطا فقط در محدودهٔ مجاز مدیر رسانه |
-| Source | Platform | ورودی خبری آماده مانند سایت یا RSS | سراسری؛ توسط Platform Admin مدیریت می‌شود |
+| Source | Platform | ورودی خبری آماده مانند سایت، RSS یا کانال/صفحهٔ اجتماعی با کراولر مرورگری ثابت | سراسری؛ توسط Platform Admin مدیریت می‌شود |
 | Media Source Subscription | Media | انتخاب یک Source آماده برای یک Media | Media × Source؛ اجرای crawler را تکثیر نمی‌کند |
 | Source Access Request | Platform | درخواست ادمین برای دسترسی یا ساخت کراولر یک Source | draft پیش از تکمیل راه‌اندازی؛ pending پس از ارسال نهایی؛ rejected، crawler_queued، crawler_failed یا access_granted پس از بررسی؛ withdrawn برای حذف منطقی پیش‌نویس؛ تصمیم و زمان‌ها ممیزی‌پذیرند |
 | Source Category | Platform | نام/شناسهٔ دسته‌بندی استخراج‌شده از یک Source | هویت دسته در محدودهٔ Source یکتا است |

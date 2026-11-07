@@ -118,6 +118,6 @@ function LegacyDashboard({
   );
 }
 
-export function Dashboard(props: ComponentProps<typeof LegacyDashboard>) { return props.context.isPlatformAdmin ? <LegacyDashboard {...props} /> : <MediaAdminDashboard context={props.context} view={props.view} />; }
+export function Dashboard(props: ComponentProps<typeof LegacyDashboard>) { return props.context.isPlatformAdmin ? <LegacyDashboard {...props} /> : <MediaAdminDashboard context={props.context} view={props.view} editorialWorkspace={props.editorialWorkspace} />; }
 
 

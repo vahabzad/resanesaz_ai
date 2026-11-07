@@ -12,6 +12,8 @@ const { migrateLocalDatabase } = await import("@/src/server/database");
 await migrateLocalDatabase();
 const { enrollCompletedMediaRequests } = await import("@/src/server/media-requests");
 await enrollCompletedMediaRequests();
+const { recoverValidatedSourceAccess } = await import("@/src/server/crawler-access-recovery");
+await recoverValidatedSourceAccess();
 
 const port = Number(process.env.API_PORT ?? 4_000);
 const hostname = process.env.API_HOST ?? "127.0.0.1";

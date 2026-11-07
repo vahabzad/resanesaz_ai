@@ -13,6 +13,21 @@ export function describeArticleFailure(error: unknown): { code: string; reason: 
   const status = /^UPSTREAM_(\d{3})$/.exec(message)?.[1];
   if (status) return { code: `UPSTREAM_${status}`, reason: `سایت پاسخ HTTP ${status} داد` };
   const reasons: Record<string, string> = {
+    TITLE_SELECTOR_MISSING: "سلکتور عنوان با صفحه تطبیق ندارد",
+    TITLE_MISMATCH: "عنوان استخراج‌شده با عنوان اصلی صفحه منطبق نیست",
+    HEADLINE_UNVERIFIED: "عنوان اصلی با شواهد صفحه تأیید نشد",
+    BODY_SELECTOR_MISSING: "سلکتور متن اصلی با ساختار صفحه تطبیق ندارد",
+    ARTICLE_TRUNCATED: "بخشی از متن اصلی خبر استخراج نشده است",
+    BODY_CONTENT_MISMATCH: "متن استخراج‌شده با محتوای ساختاریافتهٔ همان خبر منطبق نیست",
+    REMOVE_CONTENT_LOSS: "سلکتور حذف، بخشی از محتوای اصلی را حذف کرده است",
+    CONTENT_CONTAMINATED: "متن خبر شامل محتوای نامرتبط یا لینک‌های اضافی است",
+    CATEGORY_SELECTOR_MISSING: "دسته‌بندی صفحه با الگوی فعلی استخراج نشد",
+    CATEGORY_CONTENT_MISMATCH: "دسته‌بندی استخراج‌شده با شواهد صفحه منطبق نیست",
+    EXTRACTION_UNVERIFIED: "صحت و کامل‌بودن محتوای خبر قابل تأیید نیست",
+    OUTPUT_HTML_UNSAFE: "HTML خروجی برای استفادهٔ امن معتبر نیست",
+    JS_RENDERING_REQUIRED: "متن خبر در HTML قابل دریافت موجود نیست؛ احتمال نیاز به رندر جاوااسکریپت",
+    LIVEBLOG_SUMMARY_ONLY: "فقط چکیدهٔ لایوبلاگ استخراج شده و دریافت محتوای کامل تأیید نمی‌شود",
+    LIVEBLOG_UPDATES_UNAVAILABLE: "صفحهٔ زنده بسته شده و متن به‌روزرسانی‌ها در HTML دریافتی موجود نیست؛ تغییر سلکتور کافی نیست",
     ARTICLE_INVALID: "عنوان یا متن کافی با الگوی فعلی صفحه پیدا نشد",
     UPSTREAM_TIMEOUT: "مهلت دریافت صفحه تمام شد",
     RESPONSE_TOO_LARGE: "حجم صفحه از سقف مجاز بیشتر است",
@@ -59,7 +74,10 @@ export async function fetchListedArticlePage(url: string, listing: { body: strin
   lookupPublishedUrls?: () => Promise<string[]>;
 } = {}) {
   const fetchPage = options.fetchPage ?? fetchPublicHtml;
-  try { return await fetchArticlePage(url, signal, options.onRetry, fetchPage); }
+  try {
+    const page = await fetchArticlePage(url, signal, options.onRetry, fetchPage);
+    return await publishedLiveblogAlternative(page, signal, fetchPage);
+  }
   catch (error) {
     signal.throwIfAborted();
     if (!["UPSTREAM_403", "UPSTREAM_404"].includes(describeArticleFailure(error).code)) throw error;
@@ -92,6 +110,31 @@ export async function fetchListedArticlePage(url: string, listing: { body: strin
     await options.onAlias?.(safeArticleLogUrl(url), safeArticleLogUrl(candidate));
     return page;
   }
+}
+
+// Only follow an AMP alternative explicitly advertised by the publisher, for
+// a liveblog whose updates are absent. Canonical identity and origin must match.
+export async function publishedLiveblogAlternative(page: { body: string; finalUrl: string }, signal: AbortSignal, fetchPage = fetchPublicHtml) {
+  if (!/liveblog|live-updates/i.test(new URL(page.finalUrl).pathname)) return page;
+  const $ = cheerio.load(page.body);
+  if ($("amp-live-list,[itemprop='liveBlogUpdate'],[id^='live-blog-updates-item-']").length) return page;
+  const href = $("link[rel='amphtml']").attr("href");
+  if (!href) return page;
+  const original = new URL(page.finalUrl), alternate = new URL(href, original);
+  if (alternate.protocol !== 'https:' || alternate.origin !== original.origin || alternate.username || alternate.password || alternate.href === original.href || alternate.hash) return page;
+  try {
+    const amp = await fetchArticlePage(alternate.href, signal, undefined, fetchPage);
+    const doc = cheerio.load(amp.body); const canonical = doc("link[rel='canonical']").attr('href');
+    if (new URL(amp.finalUrl).origin !== original.origin || !canonical || new URL(canonical, amp.finalUrl).href !== original.href || !doc("html[amp],html[⚡]").length || !doc("amp-live-list [id^='live-blog-updates-item-'],[itemprop='liveBlogUpdate']").length) return page;
+    return { body: amp.body, finalUrl: page.finalUrl };
+  } catch (error) { signal.throwIfAborted(); if (error instanceof UnsafeSourceUrlError) throw error; return page; }
+}
+
+export function isInteractiveResultsPage(html: string, url: string) {
+  if (!/\/results\/?$/i.test(new URL(url).pathname) || /\/\d{4}\/\d{1,2}\/\d{1,2}\//.test(new URL(url).pathname)) return false;
+  const $ = cheerio.load(html);
+  return structuredRecords($, /^(?:Event|SportsEvent)$/i).length > 0 && structuredRecords($, /^FAQPage$/i).length > 0
+    && $("table").length > 0 && $("input,select,[role='combobox']").length > 0 && !$("article [itemprop='articleBody']").length;
 }
 
 export async function fetchFullArticle(url: string, signal: AbortSignal, fetchPage = fetchPublicHtml) {
@@ -148,8 +191,23 @@ function structuredRecords($: cheerio.CheerioAPI, wantedType = /^(?:NewsArticle|
   return records;
 }
 
-export function structuredArticleText(html: string) {
-  return cleanText(firstString(structuredRecords(cheerio.load(html))[0]?.articleBody));
+function articleRecord($: cheerio.CheerioAPI, url?: string) {
+  const records = structuredRecords($);
+  if (url) {
+    const matching = records.find(record => [record.url, record["@id"], typeof record.mainEntityOfPage === "object" ? (record.mainEntityOfPage as Record<string, unknown>)?.["@id"] : record.mainEntityOfPage].some(value => {
+      try { return typeof value === "string" && new URL(value, url).pathname === new URL(url).pathname; } catch { return false; }
+    }));
+    if (matching) return matching;
+  }
+  const headline = $("main h1,article h1,h1").first().text().replace(/\s+/g, " ").trim();
+  if (headline) {
+    const aligned = records.find(record => typeof record.headline === "string" && record.headline.replace(/\s+/g, " ").trim() === headline);
+    if (aligned) return aligned;
+  }
+  return records[0] ?? {};
+}
+export function structuredArticleText(html: string, url?: string) {
+  return cleanText(firstString(articleRecord(cheerio.load(html), url).articleBody));
 }
 
 function firstString(value: unknown): string | null {
@@ -262,9 +320,21 @@ export function discoverArticleLinks(html: string, listingUrl: string, recipe?: 
   return [...links].slice(0, 500).map(([url, title]) => ({ url, title }));
 }
 
-export function extractArticle(html: string, url: string, recipe?: CrawlerRecipe): CrawledArticle | null {
-  const $ = cheerio.load(html);
-  const structured = structuredRecords($)[0] ?? {};
+export function articleTitleNode($: cheerio.CheerioAPI, recipe: CrawlerRecipe, url: string) {
+  const selected = recipe.titleSelectors.map(css => $(css).first()).find(node => node.text().trim().length >= 4);
+  if (selected) return selected;
+  const canonical = $("link[rel='canonical']").attr('href');
+  const headline = firstString(articleRecord($, url).headline);
+  const candidates = $("main h1,article h1").filter((_, node) => !$(node).closest("aside,nav,footer,[class*='related'],[class*='recommend']").length);
+  const normalized = (value: string) => value.normalize('NFKC').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+  const text = normalized(candidates.first().text());
+  // A canonical, unique semantic headline confirmed by article metadata can
+  // cover a newly introduced layout without accepting unrelated headings.
+  if (canonical && new URL(canonical, url).href === new URL(url).href && candidates.length === 1 && text.length >= 16 && text.split(' ').length >= 4 && headline && (normalized(headline) === text || normalized(headline).startsWith(text + ' '))) return candidates.first();
+  return $("__missing_article_title__");
+}
+
+export function articleBodyNode($: cheerio.CheerioAPI, recipe?: CrawlerRecipe) {
   // Prefer the actual article body over article cards in navigation/related news.
   const bodySelectors = recipe?.bodySelectors ?? ["[itemprop='articleBody']", ".article-body", ".news-body", ".news_body", ".news-body-photo", ".item-body", ".body", "article", "main .content", "main"];
   let contentNode = $("__missing_article_body__");
@@ -272,8 +342,23 @@ export function extractArticle(html: string, url: string, recipe?: CrawlerRecipe
     const candidates = $(selector).filter((_, node) => !$(node).closest("nav,aside,footer").length && !$(node).parents("header").addBack("header").toArray().some((header) => !$(header).parents("main,article,[role='main']").length));
     let best = candidates.first();
     candidates.each((_, node) => { if ($(node).text().trim().length > best.text().trim().length) best = $(node); });
-    if (best.text().trim().length >= 80 || best.find("video[src],audio[src]").length) { contentNode = best.clone(); break; }
+    const root = best.closest("article,main,[role='main']");
+    if (root.length && root.find('h1').length === 1) {
+      const fragments = candidates.filter((_, node) => $(node).closest("article,main,[role='main']")[0] === root[0] && !$(node).closest("[class*='related'],[class*='recommend'],[class*='comment']").length)
+        .filter((_, node) => !$(node).parents().toArray().some(parent => candidates.toArray().includes(parent)));
+      if (fragments.length > 1) {
+        const combined = $('<div data-crawler-fragments="true"></div>'); fragments.each((_, node) => { combined.append($(node).clone()); }); best = combined;
+      }
+    }
+    if (best.text().trim().length >= 80 || best.find("video[src],audio[src]").length) { contentNode = best; break; }
   }
+  return contentNode;
+}
+
+export function extractArticle(html: string, url: string, recipe?: CrawlerRecipe): CrawledArticle | null {
+  const $ = cheerio.load(html);
+  const structured = articleRecord($, url);
+  const contentNode = articleBodyNode($, recipe).clone();
   contentNode.find("script,style,noscript,iframe,object,embed,form,nav,aside,footer").remove();
   for (const css of recipe?.removeSelectors ?? []) contentNode.find(css).remove();
   contentNode.find("*").each((_, element) => {
@@ -287,7 +372,7 @@ export function extractArticle(html: string, url: string, recipe?: CrawlerRecipe
     }
   });
   const meta = (...selectors: string[]) => selectors.map((selector) => $(selector).first().attr("content")?.trim()).find(Boolean) ?? null;
-  const recipeTitle = recipe?.titleSelectors.map((css) => $(css).first().text().trim()).find(Boolean);
+  const recipeTitle = recipe ? articleTitleNode($, recipe, url).text().trim() || null : null;
   const title = cleanText(recipeTitle ?? firstString(structured.headline ?? structured.headLine ?? structured.name) ?? meta("meta[property='og:title']") ?? $("h1").first().text());
   const contentHtml = contentNode.html()?.trim() || null;
   const content = cleanText(contentNode.text()) ?? cleanText(firstString(structured.articleBody));
@@ -308,16 +393,17 @@ export function extractArticle(html: string, url: string, recipe?: CrawlerRecipe
   };
 }
 
-export async function runWebCrawler(listingUrl: string, signal: AbortSignal, onProgress?: ProgressHandler, recipe?: CrawlerRecipe, knownArticleUrls: string[] = []) {
+export async function runWebCrawler(listingUrl: string, signal: AbortSignal, onProgress?: ProgressHandler, recipe?: CrawlerRecipe, knownArticleUrls: string[] = [], dependencies = { fetch: fetchPublicHtml, validateUrl: assertPublicHttpsUrl }) {
   signal.throwIfAborted();
   await onProgress?.({ sequence: 1, stage: "validation", status: "running", message: "آدرس منبع در Backend اصلی اعتبارسنجی شد." });
-  await assertPublicHttpsUrl(listingUrl);
-  const listing = await fetchPublicHtml(listingUrl, { timeoutMs: 20_000 });
+  await dependencies.validateUrl(listingUrl);
+  const listing = await dependencies.fetch(listingUrl, { timeoutMs: 20_000 });
   const links = discoverArticleLinks(listing.body, listing.finalUrl, recipe);
   let sitemap: Promise<string[]> | undefined;
   await onProgress?.({ sequence: 2, stage: "discovery", status: "running", message: `${links.length} پیوند خبر در صفحهٔ منبع شناسایی شد.` });
   const articles: CrawledArticle[] = [];
   let failed = 0;
+  let skipped = 0;
   for (let index = 0; index < links.length; index += 1) {
     signal.throwIfAborted();
     const startedAt = Date.now();
@@ -325,12 +411,27 @@ export async function runWebCrawler(listingUrl: string, signal: AbortSignal, onP
     await onProgress?.({ sequence: index * 2 + 3, stage: "article", status: "started", message: `دریافت خبر ${index + 1} از ${links.length} آغاز شد.`, articleUrl });
     try {
       const page = await fetchListedArticlePage(links[index].url, listing, signal, {
-        knownArticleUrls,
-        lookupPublishedUrls: () => sitemap ??= sitemapArticleUrls(listing.finalUrl, signal),
+        knownArticleUrls, fetchPage: dependencies.fetch,
+        lookupPublishedUrls: dependencies.fetch === fetchPublicHtml ? () => sitemap ??= sitemapArticleUrls(listing.finalUrl, signal) : undefined,
         onRetry: (errorCode) => onProgress?.({ sequence: index * 2 + 3, stage: "article", status: "retrying", level: "warn", articleUrl, errorCode, message: `دریافت خبر ${index + 1} به خطای موقت برخورد؛ تلاش دوم و آخر انجام می‌شود.` }),
         onAlias: (_from, to) => onProgress?.({ stage: "article-address", status: "progress", articleUrl: to, message: "نشانی کوتاه پاسخ نداد؛ نشانی کامل ثبت‌شدهٔ همان خبر با canonical صفحه تأیید شد." }),
       });
+      if (isInteractiveResultsPage(page.body, page.finalUrl)) {
+        skipped++;
+        await onProgress?.({ stage: "article-kind", status: "skipped", articleUrl, message: "صفحهٔ تعاملی نتایج با شواهد جدول، فرم و دادهٔ رویداد شناسایی شد؛ به‌عنوان خبر وارد نمی‌شود." });
+        continue;
+      }
       const article = extractArticle(page.body, page.finalUrl, recipe);
+      if (recipe) {
+        const { validateSample } = await import("./crawler-validation");
+        const quality = validateSample(page.body, page.finalUrl, recipe, article);
+        if (!quality.passed) {
+          const issues = quality.diagnostics?.issues ?? [];
+          const primary = issues.find(issue => !issue.repairable) ?? issues[0];
+          await onProgress?.({ stage: "extraction-diagnostics", status: "warning", level: "warn", articleUrl, errorCode: primary?.code ?? "ARTICLE_INVALID", message: JSON.stringify({ issues, metrics: quality.diagnostics?.metrics, layout: quality.diagnostics?.layout }) });
+          throw new Error(primary?.code ?? "ARTICLE_INVALID");
+        }
+      }
       if (!article) throw new Error("ARTICLE_INVALID");
       articles.push(article);
       await onProgress?.({ sequence: index * 2 + 4, stage: "article", status: "progress", message: `خبر ${index + 1} از ${links.length} استخراج شد.`, articleUrl, durationMs: Date.now() - startedAt });
@@ -342,5 +443,5 @@ export async function runWebCrawler(listingUrl: string, signal: AbortSignal, onP
     }
   }
   await onProgress?.({ sequence: links.length * 2 + 3, stage: "extraction-summary", status: failed ? "warning" : "completed", level: failed ? "warn" : "info", message: `استخراج تمام شد: ${links.length} لینک بررسی شد؛ ${articles.length} خبر استخراج شد و ${failed} لینک ناموفق بود.` });
-  return { discovered: links.length, failed, articles };
+  return { discovered: links.length - skipped, failed, articles };
 }

@@ -7,6 +7,8 @@ import { authClient } from "@/lib/auth-client";
 import { apiRequest } from "@/lib/api-client";
 import type { CreatedMedia, CreateMediaInput } from "@/lib/contracts/media";
 import type { MediaSetupPreferences, MediaSourceAccessRequest, SourceAccessInput } from "@/lib/contracts/media-setup";
+import { resolveSocialSource } from "@/lib/contracts/social-source";
+import type { SocialPlatform } from "@/lib/contracts/social-platforms";
 import { sourceRequestKey } from "@/lib/contracts/media-setup";
 import type { PlatformCategory } from "@/lib/contracts/platform-categories";
 import type { MediaSite, SiteSpec, SiteWorkspace } from "@/lib/contracts/sites";
@@ -60,9 +62,10 @@ export function CreateMedia({
   const [error, setError] = useState<string | null>(null);
   const [sourceType, setSourceType] = useState<"website" | "social">("website");
   const [sourceUrl, setSourceUrl] = useState("");
+  const [sourcePlatform, setSourcePlatform] = useState<SocialPlatform>();
   const [sourceCategoryMode, setSourceCategoryMode] = useState<"all" | "selected">("all");
   const [sourceCategoryIds, setSourceCategoryIds] = useState<string[]>([]);
-  const [sourceDrafts, setSourceDrafts] = useState<Array<{ id: string; sourceType: "website" | "social"; url: string; categoryMode?: "all" | "selected"; categoryIds?: string[] }>>([]);
+  const [sourceDrafts, setSourceDrafts] = useState<Array<SourceAccessInput & { id: string }>>([]);
   const [sourceEditing, setSourceEditing] = useState(false);
   const [sourceRequestSent, setSourceRequestSent] = useState(false);
   const [removedRequestIds, setRemovedRequestIds] = useState<string[]>([]);
@@ -111,7 +114,10 @@ export function CreateMedia({
 
   function addSource(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const normalizedUrl = sourceUrl.trim();
+    let normalizedUrl = sourceUrl.trim();
+    let platform = sourcePlatform;
+    try { if (sourceType === "social") { const normalized = resolveSocialSource(sourcePlatform, sourceUrl); normalizedUrl = normalized.url; platform = normalized.platform; } }
+    catch (error) { setError(error instanceof Error ? error.message : "مشخصات منبع معتبر نیست."); return; }
     const selectedCategoryIds = sourceCategoryMode === "all" ? categories.map((category) => category.id) : sourceCategoryIds;
     if (sourceType === "website" && !selectedCategoryIds.length) {
       setError("برای دریافت دسته‌های مشخص، حداقل یک دسته انتخاب کنید.");
@@ -122,14 +128,14 @@ export function CreateMedia({
       return;
     }
     const allCategoriesSelected = sourceType === "website" && selectedCategoryIds.length === categories.length;
-    setSourceDrafts((current) => [...current, { id: crypto.randomUUID(), sourceType, url: normalizedUrl, ...(sourceType === "website" ? { categoryMode: allCategoriesSelected ? "all" : "selected", categoryIds: allCategoriesSelected ? [] : [...selectedCategoryIds] } : {}) }]);
+    setSourceDrafts((current) => [...current, { id: crypto.randomUUID(), sourceType, url: normalizedUrl, ...(sourceType === "social" ? { platform } : {}), ...(sourceType === "website" ? { categoryMode: allCategoriesSelected ? "all" : "selected", categoryIds: allCategoriesSelected ? [] : [...selectedCategoryIds] } : {}) }]);
     setSourceUrl("");
     setError(null);
     setSourceRequestSent(false);
   }
 
   async function editSource(item: SourceListItem, input: SourceAccessInput) {
-    const normalized: SourceAccessInput = { sourceType: input.sourceType, url: input.url.trim(), ...(input.sourceType === "website" ? { categoryMode: input.categoryMode ?? "all", categoryIds: input.categoryMode === "selected" ? input.categoryIds ?? [] : [] } : {}) };
+    const normalized: SourceAccessInput = { sourceType: input.sourceType, ...(input.sourceType === "social" ? resolveSocialSource(input.platform, input.url) : { url: input.url.trim() }), ...(input.sourceType === "website" ? { categoryMode: input.categoryMode ?? "all", categoryIds: input.categoryMode === "selected" ? input.categoryIds ?? [] : [] } : {}) };
     if ([...sourceDrafts, ...visibleSourceRequests].some(other => other.id !== item.id && sourceRequestKey(other.url) === sourceRequestKey(normalized.url))) throw new Error("این منبع را قبلاً به همین رسانه اضافه کرده‌اید؛ ثبت تکراری ممکن نیست.");
     if (normalized.sourceType === "website" && normalized.categoryMode === "selected" && (!normalized.categoryIds?.length || normalized.categoryIds.some(id => !categories.some(category => category.id === id)))) throw new Error("دسته‌بندی‌های انتخاب‌شده باید در فهرست فعال سوپر ادمین باشند.");
     if (!item.saved) {
@@ -181,7 +187,7 @@ export function CreateMedia({
     setError(null);
     try {
       for (const draft of sourceDrafts) {
-        const saved = await apiRequest<MediaSourceAccessRequest>("/api/v1/media/source-access-requests", { sourceType: draft.sourceType, url: draft.url, ...(draft.sourceType === "website" ? { categoryMode: draft.categoryMode, categoryIds: draft.categoryIds ?? [] } : {}) });
+        const saved = await apiRequest<MediaSourceAccessRequest>("/api/v1/media/source-access-requests", { sourceType: draft.sourceType, url: draft.url, ...(draft.platform ? { platform: draft.platform } : {}), ...(draft.sourceType === "website" ? { categoryMode: draft.categoryMode, categoryIds: draft.categoryIds ?? [] } : {}) });
         setNewSavedRequests(current => [...current, saved]);
         setSourceDrafts((current) => current.filter((item) => item.id !== draft.id));
       }
@@ -317,11 +323,11 @@ export function CreateMedia({
             <p className="media-create-intro">برای هر منبع، لینک و نوع آن را وارد کنید. می‌توانید هر تعداد وب‌سایت یا کانال اجتماعی به فهرست اضافه کنید؛ منابع تا پایان راه‌اندازی پیش‌نویس و قابل حذف‌اند؛ پس از تکمیل مرحلهٔ آخر برای بررسی سوپر ادمین ارسال می‌شوند.</p>
             <section className="media-source-request">
               <form onSubmit={addSource}>
-                <SourceInputFields value={{ sourceType, url: sourceUrl, ...(sourceType === "website" ? { categoryMode: sourceCategoryMode, categoryIds: sourceCategoryIds } : {}) }} categories={categories} disabled={pending || sourceEditing} onChange={input => { setSourceType(input.sourceType); setSourceUrl(input.url); setSourceCategoryMode(input.categoryMode ?? "all"); setSourceCategoryIds(input.categoryIds ?? []); }} />
+                <SourceInputFields value={{ sourceType, url: sourceUrl, ...(sourcePlatform ? { platform: sourcePlatform } : {}), ...(sourceType === "website" ? { categoryMode: sourceCategoryMode, categoryIds: sourceCategoryIds } : {}) }} categories={categories} disabled={pending || sourceEditing} onChange={input => { setSourceType(input.sourceType); setSourceUrl(input.url); setSourcePlatform(input.platform); setSourceCategoryMode(input.categoryMode ?? "all"); setSourceCategoryIds(input.categoryIds ?? []); }} />
                 <button type="submit" className="primary-button" disabled={pending || sourceEditing}><Plus size={15} />افزودن به فهرست منابع</button>
               </form>
               <SourceList
-                items={[...visibleSourceRequests.map(request => ({ id: request.id, sourceType: request.sourceType, url: request.url, categoryMode: request.categoryMode ?? undefined, categoryIds: request.categoryIds, status: request.status, saved: true })), ...sourceDrafts.map(draft => ({ ...draft, status: "draft" as const, saved: false }))]}
+                items={[...visibleSourceRequests.map(request => ({ id: request.id, sourceType: request.sourceType, url: request.url, platform: request.platform ?? undefined, categoryMode: request.categoryMode ?? undefined, categoryIds: request.categoryIds, status: request.status, saved: true })), ...sourceDrafts.map(draft => ({ ...draft, status: "draft" as const, saved: false }))]}
                 categories={categories} busy={pending} setupCompleted={preferences.setupCompleted} onEdit={editSource} onEditingChange={setSourceEditing}
                 onRemove={item => { if (item.saved) void removeSavedSource(item.id); else setSourceDrafts(current => current.filter(row => row.id !== item.id)); }}
               />

@@ -23,7 +23,8 @@ test("automatic editorial start persists, includes boundary, respects scope and 
     await database.insert(schema.user).values(["editor", "other", "viewer"].map(id => ({ id, name: id, email: `${id}@test.example` })));
     await database.insert(schema.media).values(["m1", "m2"].map(id => ({ id, name: id, slug: id, createdAt: new Date() })));
     await database.insert(schema.membership).values([["editor", "m1", "editor"], ["other", "m2", "owner"], ["viewer", "m1", "viewer"]].map(([userId, organizationId, role]) => ({ id: userId, userId, organizationId, role, createdAt: new Date() })));
-    await database.insert(schema.platformEditorialConfig).values({ id: "cfg", revision: 1, instructions: "Preserve facts and attribution. Never invent quotations.", factions: [] });
+    // Saved editor settings must work without a separate platform configuration.
+    assert.equal((await database.select().from(schema.platformEditorialConfig)).length, 0);
     await database.insert(schema.source).values({ id: "src", name: "Source", url: "https://source.test", adapterKey: "web" });
     await database.insert(schema.crawlerDefinition).values({ id: "def", sourceId: "src", adapterKey: "web" });
     await database.insert(schema.crawlerVersion).values({ id: "cv", definitionId: "def", version: 1, config: {} });
@@ -33,7 +34,7 @@ test("automatic editorial start persists, includes boundary, respects scope and 
     const times = { old: "2026-10-13T20:29:59Z", boundary: "2026-10-13T20:30:00Z", newer: "2026-10-14T02:00:00Z", foreign: "2026-10-14T03:00:00Z" };
     await database.insert(schema.rawArticle).values(Object.entries(times).map(([id, time]) => ({ id, sourceId: "src", crawlRunId: "run", title: `Headline ${id}`, content: body, canonicalUrl: `https://source.test/${id}`, categories: ["News"], contentHash: id, ingestedAt: new Date(time), publishedAt: new Date("2020-01-01") })));
     await database.insert(schema.mediaInboxItem).values(Object.keys(times).map(id => ({ id: `i-${id}`, mediaId: id === "foreign" ? "m2" : "m1", rawArticleId: id })));
-    const settings = { factionId: null, viewpointStrength: 0, humor: 0, formality: 70, sourceIds: ["src"], categories: ["News"] };
+    const settings = { autoFreshness: { maxAgeHours: null, unknownDatePolicy: "received" as const, resumeMode: "continue" as const }, instructions: "Use the saved newsroom instructions and preserve all verified facts.", socialInstructions: "Use the saved social instructions and preserve attribution.", language: "fa", factionId: null, viewpointStrength: 0, humor: 0, formality: 70, sourceIds: ["src"], categories: ["News"] };
     let section = await data(await request("/sections", { name: "Start test", settings: { ...settings, autoReceivedSince: cutoff }, autoEnabled: true, autoBatchSize: 10 }), 201);
     const patch = (overrides: Record<string, unknown> = {}) => request(`/sections/${section.id}`, { name: section.name, settings: section.settings, autoEnabled: true, autoBatchSize: 10, expectedRevision: section.revision, archived: false, ...overrides }, "PATCH");
     assert.deepEqual((await getSectionCandidates("m1", section.id, true)).map(a => a.id), ["newer", "boundary"]);
@@ -43,10 +44,17 @@ test("automatic editorial start persists, includes boundary, respects scope and 
     assert.equal(await scheduleEditorialJobs(), 0);
     const manual = await enqueueEditorialJob(actor, section.id, "old");
     // Narrow the range while a worker is waiting for a response. Its output must be discarded.
+    let rewriteCalled = false;
     await runEditorialWorkerCycle(async input => {
+      rewriteCalled = true;
+      assert.equal(input.policy.platformConfigId, "builtin-default");
+      assert.equal(input.policy.instructions, settings.instructions);
+      assert.equal(input.policy.settings.socialInstructions, settings.socialInstructions);
+      assert.equal(input.policy.settings.language, settings.language);
       section = await data(await patch({ startAutoNow: true }));
       return { title: "عنوان تحریرشده", lead: "لید", body, sourceKeys: [input.sourceKey], reviewRequired: false };
     });
+    assert.equal(rewriteCalled, true);
     assert.equal((await database.select().from(schema.editorialStory)).length, 0);
     const jobs = await database.select().from(schema.editorialJob);
     assert.equal(jobs.filter(j => j.trigger === "automatic" && j.status === "cancelled" && j.errorCode === "AUTO_START_CHANGED").length, 2);

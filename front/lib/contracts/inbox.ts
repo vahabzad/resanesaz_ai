@@ -4,6 +4,7 @@ export type InboxArticle = {
   sourceName: string;
   title: string;
   summary: string | null;
+  categories: string[];
   canonicalUrl: string;
   status: "new" | "quarantined";
   quarantineReason: string | null;
@@ -11,8 +12,16 @@ export type InboxArticle = {
   ingestedAt: string;
 };
 
+export type InboxArticleDetail = InboxArticle & { content: string | null; author: string | null };
+
 export type InboxWorkspace = {
   articles: InboxArticle[];
+  total: number;
+  page: number;
+  pageCount: number;
+  pageSize: number;
+  sources: { id: string; name: string }[];
+  categories: string[];
   stats: {
     total: number;
     newCount: number;

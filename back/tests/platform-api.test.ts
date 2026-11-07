@@ -187,15 +187,16 @@ test("platform catalog and run logs require independent platform authorization",
     assert.equal((await request(`sources/${built.sourceId}/build`,"POST")).status,202);
     await runCrawlWorkerCycle(1,async()=>{throw new CrawlerBuildError("CRAWLER_VALIDATION_FAILED",{...report,passed:false});});
     const [rejectedSource]=await database.select().from(schema.source).where(eq(schema.source.id,built.sourceId));
-    assert.equal(rejectedSource.enabled,false);
-    assert.equal(rejectedSource.lastErrorCode,"CRAWLER_VALIDATION_FAILED");
-    assert.equal((await request(`sources/${built.sourceId}/resume`,"POST")).status,404);
+    assert.equal(rejectedSource.enabled,true);
+    assert.equal(rejectedSource.status,"active");
+    assert.equal(rejectedSource.lastErrorCode,null);
+    assert.equal((await request(`sources/${built.sourceId}/resume`,"POST")).status,200);
     assert.equal((await request(`sources/${built.sourceId}/build`,"POST")).status,202);
     await runCrawlWorkerCycle(1,async()=>{ await cancelActiveSourceRuns(built.sourceId); return goodBuilder(); });
     const [cancelledSource]=await database.select().from(schema.source).where(eq(schema.source.id,built.sourceId));
-    assert.equal(cancelledSource.enabled,false);
+    assert.equal(cancelledSource.enabled,true);
     // Debug keeps the working version alive until a replacement passes.
-    await database.update(schema.source).set({enabled:true,status:"active"}).where(eq(schema.source.id,built.sourceId));
+    await database.update(schema.source).set({enabled:true,status:"active",lastErrorCode:"PARTIAL_EXTRACTION"}).where(eq(schema.source.id,built.sourceId));
     await database.insert(schema.crawlRunEvent).values({id:"debug-error-context",runId:built.runId,sequence:999,stage:"article",status:"warning",level:"warn",message:"Do not send raw diagnostics or secrets",errorCode:"ARTICLE_INVALID",articleUrl:"https://user:private@example.test/news/old?token=private",durationMs:800});
     await database.insert(schema.crawlRunEvent).values({id:"historical-passed-address",runId:built.runId,sequence:998,stage:"build-test",status:"progress",level:"info",message:"Successful validation in an earlier attempt",articleUrl:"https://example.test/news/99999/historical-story"});
     await database.insert(schema.crawlRunEvent).values(Array.from({length:105},(_,i)=>({id:`debug-repeat-${i}`,runId:built.runId,sequence:1000+i,stage:"article",status:"warning",level:"warn",message:"Repeated failure",errorCode:"ARTICLE_INVALID",articleUrl:"https://example.test/news/repeated",durationMs:900})));
@@ -218,6 +219,7 @@ test("platform catalog and run logs require independent platform authorization",
       assert.ok(context?.knownArticleUrls?.includes(report.samples[0].url));
       assert.ok(context?.knownArticleUrls?.includes("https://example.test/news/99999/historical-story"));
       assert.deepEqual(context?.recipe,recipe);
+      assert.ok(context?.failures.some(f=>f.url===null&&f.errorCode==="PARTIAL_EXTRACTION"));
       assert.ok(context?.failures.some(f=>f.url==="https://example.test/news/old"&&f.errorCode==="ARTICLE_INVALID"));
       assert.equal(context?.failures.filter(f=>f.url==="https://example.test/news/repeated").length,1);
       assert.doesNotMatch(JSON.stringify(context),/private|token=|raw diagnostics/);
@@ -239,6 +241,12 @@ test("platform catalog and run logs require independent platform authorization",
     const [retiredVersion]=await database.select().from(schema.crawlerVersion).where(eq(schema.crawlerVersion.id,readyVersion.id));
     assert.equal(retiredVersion.status,"retired");
     assert.equal((await database.select().from(schema.rawArticle)).length,3);
+    const followups = (await database.select().from(schema.crawlRun)).filter(run => run.sourceId === built.sourceId && run.status === "queued");
+    assert.equal(followups.length,1);
+    const [correctedVersion] = await database.select().from(schema.crawlerVersion).where(eq(schema.crawlerVersion.id,followups[0].crawlerVersionId));
+    assert.equal(correctedVersion.status,"active");
+    assert.equal(followups[0].trigger,"schedule");
+    await cancelActiveSourceRuns(built.sourceId);
     assert.equal((await request("sources/missing/debug","POST")).status,404);
     await database.update(schema.source).set({adapterKey:"rss"}).where(eq(schema.source.id,built.sourceId));
     assert.equal((await request(`sources/${built.sourceId}/debug`,"POST")).status,409);
@@ -246,7 +254,28 @@ test("platform catalog and run logs require independent platform authorization",
     await request(`sources/${built.sourceId}/debug`,"POST");
     await runCrawlWorkerCycle(1,goodBuilder);
     const [pausedAfterDebug]=await database.select().from(schema.source).where(eq(schema.source.id,built.sourceId));
-    assert.equal(pausedAfterDebug.enabled,false);
-    assert.equal(pausedAfterDebug.status,"paused");
+    assert.equal(pausedAfterDebug.enabled,true);
+    assert.equal(pausedAfterDebug.status,"active");
+    assert.equal(pausedAfterDebug.lastErrorCode,null);
+    let pendingAfterDebug = (await database.select().from(schema.crawlRun)).filter(run => run.sourceId === built.sourceId && run.status === "queued");
+    assert.equal(pendingAfterDebug.length,1);
+    await cancelActiveSourceRuns(built.sourceId);
+    // A stop during debug wins over a late successful builder response.
+    await database.update(schema.source).set({enabled:false,status:"paused"}).where(eq(schema.source.id,built.sourceId));
+    await request(`sources/${built.sourceId}/debug`,"POST");
+    await runCrawlWorkerCycle(1,async()=>{ await request(`sources/${built.sourceId}/stop`,"POST"); return goodBuilder(); });
+    const [stoppedDuringDebug] = await database.select().from(schema.source).where(eq(schema.source.id,built.sourceId));
+    assert.equal(stoppedDuringDebug.enabled,false);
+    assert.equal(stoppedDuringDebug.status,"paused");
+    pendingAfterDebug = (await database.select().from(schema.crawlRun)).filter(run => run.sourceId === built.sourceId && ["queued","running"].includes(run.status));
+    assert.equal(pendingAfterDebug.length,0);
+    const active = (await database.select().from(schema.crawlerVersion)).find(version => version.definitionId === readyVersion.definitionId && version.status === "active")!;
+    await database.insert(schema.crawlerVersion).values({id:"stalled-build-version",definitionId:active.definitionId,version:999,status:"draft",config:{}});
+    await database.insert(schema.crawlRun).values({id:"stalled-build-run",sourceId:built.sourceId,crawlerVersionId:"stalled-build-version",status:"running",trigger:"build",startedAt:new Date("2000-01-01"),correlationId:"stalled-build"});
+    await runCrawlWorkerCycle(0,goodBuilder);
+    const [stillPaused] = await database.select().from(schema.source).where(eq(schema.source.id,built.sourceId));
+    assert.equal(stillPaused.status,"paused");
+    assert.equal((await database.select().from(schema.crawlerVersion).where(eq(schema.crawlerVersion.id,active.id)))[0].status,"active");
+    assert.equal((await database.select().from(schema.crawlerVersion).where(eq(schema.crawlerVersion.id,"stalled-build-version")))[0].status,"failed");
   } finally { t.mock.restoreAll(); await client.close(); globalThis.__mediaCommandPglite = undefined; }
 });

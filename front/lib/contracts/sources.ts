@@ -1,10 +1,11 @@
+import type { SourceAdapter } from "./social-platforms";
 export type SourceStatus = "active" | "degraded" | "failed" | "paused" | "building";
 
 export type SourceSummary = {
   id: string;
   name: string;
   url: string;
-  adapterKey: "web" | "rss";
+  adapterKey: SourceAdapter;
   status: SourceStatus;
   enabled: boolean;
   executionBlocked: boolean;

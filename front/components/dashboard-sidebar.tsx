@@ -111,6 +111,7 @@ export function DashboardSidebar({
           {adminMode ? <div className="nav-group">{[
             { label: "داشبورد (وضعیت)", href: "/", view: "dashboard", icon: LayoutDashboard },
             { label: "اخبار ورودی", href: "/inbox", view: "inbox", icon: Inbox, disabled: !inboxEnabled },
+            { label: "سردبیرهای من", href: "/editorial", view: "editorial", icon: PenLine },
             { label: "منابع من", href: "/sources", view: "sources", icon: Radio },
             { label: "مدیریت سایت", href: "/sites", view: "sites", icon: Globe2 },
             { label: "بات‌های شبکه‌های اجتماعی", href: "/bots", view: "bots", icon: Bot, phaseTwo: true },

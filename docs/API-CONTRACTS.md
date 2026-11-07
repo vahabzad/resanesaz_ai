@@ -1,5 +1,7 @@
 # قراردادهای API و یکپارچه‌سازی
 
+در تنظیمات سردبیر، `settings.sourceAttribution` اختیاری با شکل `{website: "named"|"omit", social: "named"|"omit"}` پذیرفته و بازخوانی می‌شود. نبود آن معادل named/named است. حالت بر اساس نوع منبع ورودی برای خبر و نسخهٔ اجتماعی اعمال می‌شود، نه مقصد انتشار. هر کار snapshot همان سیاست را دارد؛ تغییر تنظیم، کارها و خروجی‌های قبلی را بازنویسی نمی‌کند. هویت کانال/پیج از نام ثبت‌شده/URL پروفایل و adapter، با fallback آیدی، در provenance ورودی کار ثبت می‌شود. ADR-0044.
+
 وضعیت: Frontend و Backend مستقل‌اند؛ API فعال در `back` پیاده‌سازی شده است.
 
 ## مرز اجرا
@@ -41,7 +43,8 @@
 - `GET /api/v1/sources`: Subscriptionهای Media فعال، سلامت Sourceهای سراسری و منابع قابل انتخاب کاتالوگ.
 - `POST /api/v1/sources`: ایجاد Subscription با بدنهٔ `{ "sourceId": "..." }`؛ crawler تازه نمی‌سازد.
 - `DELETE /api/v1/sources/:sourceId`: حذف Subscription همان Media؛ Source سراسری دست‌نخورده می‌ماند.
-- `GET /api/v1/articles`: Media Inbox Itemهای Media فعال همراه دادهٔ Raw Article سراسری.
+- `GET /api/v1/articles`: Media Inbox Itemهای مجاز Media فعال؛ فیلتر `query` (تیتر/متن/چکیده/نام منبع، حداکثر ۲۰۰ نویسه و همسان‌سازی ی/ک)، `sourceId`، `category` (دستهٔ خام منبع)، `status=new|quarantined`، `period=24h|7d|30d` بر اساس زمان دریافت، `sort=received|published|oldest` و `page` دارد. فیلتر قبل از صفحه‌بندی ۲۰تایی اجرا می‌شود. پاسخ `articles`, `total`, `page`, `pageSize`, `pageCount`, `sources`, `categories`, `stats` است؛ گزینه‌ها و آمار کلی فقط از Inbox مجاز همان رسانه‌اند، `total` شمار نتیجهٔ فیلترشده است. مقادیر خالی فیلتر به معنی همه است و پیش‌فرض مرتب‌سازی جدیدترین دریافت است.
+- `GET /api/v1/articles/:id`: متن سادهٔ کامل ذخیره‌شده (`content`)، نویسنده، چکیده، دسته‌ها و مشخصات خبر برای مودال خواندن؛ فقط با وجود Inbox Item در Media فعال و دسترسی جاری منبع/دسته. شناسهٔ خارج از دسترسی 404 می‌دهد. HTML خام و credential برنمی‌گردد؛ UI متن منبع را escape می‌کند و خواندن، وضعیت خبر یا گردش تحریریه را تغییر نمی‌دهد.
 - `GET /api/v1/crawl-runs/:runId/events`: log یک run فقط اگر Media به Source آن subscribe باشد.
 
 ## API فضای Platform
@@ -71,7 +74,7 @@
 
 کاتالوگ Platform شامل `visibleToMedia`، `mediaDeliveryEnabled` و `archivedAt` است؛ UI به‌طور پیش‌فرض منابع حذف‌شده را کنار می‌گذارد و فیلتر نمایش حذف‌شده‌ها برای بازیابی دارد. جزئیات سیاست‌ها در ADR-0008 ثبت شده است.
 
-رابط این عملیات در `/platform/sources` است. فضای پلتفرم انتخاب‌گر Media ندارد و نقش owner/admin رسانه به‌تنهایی مجوز این APIها نیست. ساخت وب با Codex SDK recipe اختصاصی می‌سازد و حداقل سه نمونه (حداکثر شش نمونهٔ متنوع) را پیش از فعال‌سازی بررسی می‌کند؛ شکست آزمون حداکثر سه بار به اصلاح الگو منجر می‌شود. RSS با parser واقعی آزموده می‌شود. کاتالوگ Platform فیلدهای `buildStatus` و `buildReport` و گزارش نمونه‌ها دارد؛ لاگ ساخت trigger برابر `build` دارد. نسخه‌های عمومی قبلی آزمون‌شده فرض نمی‌شوند. جزئیات در ADR-0011 ثبت است.
+رابط این عملیات در `/platform/sources` است. فضای پلتفرم انتخاب‌گر Media ندارد و نقش owner/admin رسانه به‌تنهایی مجوز این APIها نیست. ساخت وب با Codex SDK recipe اختصاصی می‌سازد؛ طبق ADR-0039 پیش‌فرض ۱۲ صفحهٔ probe و ۶ تا ۱۲ نمونهٔ متناسب با تنوع قالب دارد. نمونه‌های تاریخی و شکست‌خورده اجباری‌اند و دیباگ پوشش کشف فعلی/قبلی را کامل بازآزمایی می‌کند؛ حداقل سه صفحهٔ معتبر همچنان الزامی است. اصلاح پیش‌فرض سه تلاش و دارای بودجهٔ زمان/درخواست/حافظه است؛ الگوی تکراری یا خطای غیرقابل‌اصلاح با CSS زودتر متوقف می‌شود. RSS با parser واقعی آزموده می‌شود. کاتالوگ Platform فیلدهای `buildStatus` و `buildReport` دارد؛ `sampling`، `terminationReason`، `discoveryError` و `samples[].diagnostics` اختیاری‌اند. diagnostics شامل `layout`، `issues` با `code/stage/repairable` و `metrics` عددی است. بازسازی ناموفق نسخهٔ فعال قبلی را حفظ می‌کند. نسخه‌های عمومی قبلی آزمون‌شده فرض نمی‌شوند. جزئیات در ADR-0011 و ADR-0039 ثبت است.
 
 ## قرارداد job
 
@@ -119,10 +122,17 @@ queued|running → cancelled
 - `settings.language`: `fa/en/ar/tr/fr/de/es/ru`، پیش‌فرض فارسی. زبان در snapshot سیاست ثبت می‌شود و عنوان/لید/متن تولیدی Codex را تعیین می‌کند؛ تغییر تنظیمات روی کار تاریخی اثر ندارد.
 - هر سیاست دو دستور متنی مستقل در `settings.instructions` و `settings.socialInstructions` دارد؛ دومی اختیاری و ۲۰ تا ۵۰۰۰ نویسه است و برای ساخت نسخهٔ شبکهٔ اجتماعی استفاده می‌شود. خروجی تحریر شامل `title`, `lead` (چکیده), `body` (متن کامل), `socialText` و `reviewRequired` است؛ نسخهٔ اجتماعی در rendition ذخیره می‌شود.
 
+### تازگی خبر برای تحریر خودکار
+
+- `settings.autoFreshness` اختیاری است: `{ maxAgeHours: number | null, unknownDatePolicy: "skip" | "received", resumeMode: "new_only" | "continue" }`. سقف سن عدد صحیح ۱ تا ۷۲۰ ساعت است؛ `null` بدون سقف سن. پیش‌فرض مؤثر برای نبود تنظیم نیز `{ maxAgeHours: 6, unknownDatePolicy: "skip", resumeMode: "new_only" }` است. حذف فیلد در PATCH تنظیم قبلی را حفظ می‌کند؛ مقدار نامعتبر پاسخ 400 دارد.
+- `new_only` هنگام گذار stopped→active یا خاموش→روشن اجرای خودکار، `autoReceivedSince` را با زمان سرور جلو می‌برد؛ نقطهٔ آینده عقب نمی‌رود. `continue` بازهٔ ثبت‌شده را نگه می‌دارد. سن خبر در هر دو حالت رعایت می‌شود.
+- سن از `RawArticle.publishedAt` محاسبه می‌شود. فقط در حالت `received` و نبود تاریخ انتشار، `ingestedAt` مبناست. خبر با تاریخ آینده تا رسیدن آن زمان واجد شرایط نیست. شرط تازگی قبل از limit فهرست ورودی خودکار، enqueue، فراخوانی مدل و ثبت خروجی اعمال می‌شود؛ کار دستی و retry دستی مستقل‌اند.
+- تغییر تنظیمات، کارهای خودکار بازِ نامنطبق را با `AUTO_FRESHNESS_CHANGED` (یا در تغییر نقطهٔ شروع، `AUTO_START_CHANGED`) لغو می‌کند. انقضای صف/اجرا، تاریخ نامشخص، تاریخ آینده و نبود خبر در صندوق، وضعیت `cancelled` و کدهای `AUTO_NEWS_EXPIRED`، `AUTO_DATE_UNKNOWN`، `AUTO_DATE_FUTURE` و `AUTO_INPUT_UNAVAILABLE` دارند.
+
 ### نقطهٔ شروع تحریر خودکار
 
-- ساخت/ویرایش سرویس، `settings.autoReceivedSince` اختیاری با مقدار ISO دارای timezone یا `null` می‌گیرد. `null` یعنی همهٔ اخبار پردازش‌نشده؛ حذف فیلد در PATCH مقدار قبلی را حفظ می‌کند. مقدار نامعتبر پاسخ 400 دارد. `startAutoNow: true` در سطح بدنه، زمان ثبت سرور را یک‌بار جایگزین این مقدار می‌کند؛ پاسخ و Workspace زمان ثابت را برمی‌گردانند.
-- انتخاب خودکار با شرط `RawArticle.ingestedAt >= autoReceivedSince` و همان scope و فیلترهای سرویس انجام می‌شود؛ انتخاب دستی مستقل است. تغییر نقطهٔ شروع، کارهای خودکار باز خارج از بازه را با `AUTO_START_CHANGED` لغو می‌کند؛ خروجی تکمیل‌شده و کار دستی حفظ می‌شوند. کار لغوشده فقط با retry دستی برمی‌گردد. توقف، فعال‌سازی و restart زمان ذخیره‌شده را تغییر نمی‌دهند (ADR-0019).
+- ساخت/ویرایش سرویس، `settings.autoReceivedSince` اختیاری با مقدار ISO دارای timezone یا `null` می‌گیرد. `null` یعنی بدون محدودیت زمان دریافت، با رعایت قواعد تازگی؛ حذف فیلد در PATCH مقدار قبلی را حفظ می‌کند. مقدار نامعتبر پاسخ 400 دارد. `startAutoNow: true` در سطح بدنه، زمان ثبت سرور را یک‌بار جایگزین این مقدار می‌کند؛ پاسخ و Workspace زمان ثابت را برمی‌گردانند.
+- انتخاب خودکار با شرط `RawArticle.ingestedAt >= autoReceivedSince` و همان scope و فیلترهای سرویس انجام می‌شود؛ انتخاب دستی مستقل است. تغییر نقطهٔ شروع، کارهای خودکار باز خارج از بازه را با `AUTO_START_CHANGED` لغو می‌کند؛ خروجی تکمیل‌شده و کار دستی حفظ می‌شوند. کار لغوشده فقط با retry دستی برمی‌گردد. توقف و restart زمان را تغییر نمی‌دهند؛ فعال‌سازی دوباره یا روشن‌کردن خودکار طبق `autoFreshness.resumeMode` رفتار می‌کند (ADR-0037؛ اصلاح ADR-0019).
 
 ### قالب اجتماعی سرویس تحریریه
 
@@ -136,7 +146,8 @@ queued|running → cancelled
 - هر ردیف `stories` دارای `sourceNames:string[]` است: نام‌های یکتای snapshot منابع نسخهٔ جاری در همان رسانه؛ منبع قطع‌شده حذف می‌شود و نام پس از حذف Raw باقی می‌ماند. نبود نام، آرایهٔ خالی است.
 
 - `GET /api/v1/editorial`: `page` (پیش‌فرض ۱)، `pageSize` (۱۰/۲۰/۵۰؛ پیش‌فرض ۲۰)، `query`، `status`، `sectionId`، `sourceId`، `language`، `from/to` (ISO با offset) و `view=ready`. پاسخ دارای `stories` و `pagination:{page,pageSize,total,pageCount}` است. بخش اصلی/ثانویه و فقط منابع متصل نسخهٔ جاری در فیلتر لحاظ می‌شوند؛ scope از جلسه گرفته می‌شود.
-- `GET /api/v1/editorial/jobs`: page/pageSize و status؛ پاسخ jobs/counts/pagination. counts کل صف همان رسانه را می‌شمارند، total متعلق به نتایج فیلتر است. پارامتر ناشناخته/اندازه نامعتبر 400 می‌گیرد.
+- `GET /api/v1/editorial/jobs`: page/pageSize، status و sectionId اختیاری؛ پاسخ jobs/counts/activity/pagination. counts وضعیت‌های سردبیر انتخابی در رسانهٔ فعال (و با نبود sectionId کل رسانه) را می‌شمارند و از فیلتر status مستقل‌اند؛ total متعلق به نتایج فیلتر است. activity، شمار queued/running/succeeded/failed/reviewRequired/cancelled و lastJobAt/lastFinishedAt هر سردبیر همان رسانه را مستقل از فیلتر صف برمی‌گرداند. در read model، failed با کد CONTENT_REVIEW_REQUIRED به status=review_required تبدیل می‌شود و از failed فنی کنار می‌رود؛ فیلتر و شمارها همین قاعده را دارند. jobs زمان createdAt/finishedAt دارند. sectionId رسانهٔ دیگر نتیجه/شمار خالی می‌دهد؛ activity هرگز از رسانهٔ فعال خارج نمی‌شود. پارامتر ناشناخته/اندازه نامعتبر 400 می‌گیرد.
+- `GET /api/v1/editorial/jobs/:id`: مجوز story/read و Media فعال لازم است؛ تشخیص ثابت و امن `diagnosis`، `canRetry`، وضعیت/کد/زمان‌ها و snapshot متن سادهٔ ورودی `input` را برمی‌گرداند. شناسهٔ رسانهٔ دیگر 404 است. HTML خام، credential، config اجرایی و prompt خصوصی برنمی‌گردند. ADR-0043.
 - Section دارای `parentId:null|string` است. حذف یا تغییر hierarchy با revision/مجوز و قفل تراکنش انجام می‌شود؛ والد بیگانه/چرخه/والد حذف‌شده و حذف والد دارای فرزند فعال مجاز نیست. زیرسرویس تنظیمات و توقف مستقل دارد.
 - جزئیات Story شامل policies نسخه‌های همان خبر است. Article Version دارای sectionId اصلی، secondarySectionIds، sourceIds (شناسهٔ Story Source) و renditions است. منابع خارج از Story یا رسانه رد می‌شوند. metadata نمایشی section/policy/language/actor/time از همان نسخه است، نه Layout مقصد.
 - `POST /api/v1/editorial/stories/:id/sources`: `{expectedRevision,rawArticleId}` برای اتصال یا `{expectedRevision,sourceId}` برای قطع؛ دقیقاً یکی از دو شناسه. فقط ورودی سالم Inbox همان رسانه، حداکثر ۲۰ منبع و حداقل یک منبع. تغییر، نسخهٔ draft تازه می‌سازد؛ منابع تاریخی حذف نمی‌شوند و متن خودکار ادغام نمی‌شود.
@@ -199,3 +210,20 @@ queued|running → cancelled
 - `PATCH /api/v1/platform/category-mappings/:id`: `{expectedRevision, categoryId}` یا `{expectedRevision, newCategory: {nameFa,nameEn,nameAr}}`. ساخت و اتصال اتمیک؛ نسخهٔ قدیمی ۴۰۹، دستهٔ غیرفعال/ورودی نامعتبر ۴۰۰.
 - `GET /api/v1/platform/category-mappings/:id/history`: ۲۰ تغییر اخیر شامل معادل قبلی/جدید، تصمیم‌گیر و زمان.
 
+
+### ادامهٔ دریافت پس از دیباگ کراولر
+
+موفقیت `POST /api/v1/platform/sources/:id/debug` پس از gate دیباگ، نسخهٔ فعال و وضعیت Source را در تراکنش تغییر می‌دهد و یک run دریافت واقعی با trigger `schedule` و نسخهٔ جدید ثبت می‌کند. run دریافت correlation مستقل `debug-followup:<debugRunId>` دارد؛ audit آن به اجرای دیباگ پیوند می‌زند. Source قبلاً متوقف نیز فعال می‌شود؛ توقف حین اجرا، نتیجهٔ دیررس را لغو می‌کند. دیباگ ناموفق دریافت فوری تازه‌ای نمی‌سازد و نسخهٔ قبلی حفظ می‌شود. ADR-0038.
+
+## منابع اجتماعی — ADR-0040
+
+`POST /api/v1/platform/sources` در `adapterKey` علاوه بر `web` و `rss`، کلیدهای `aparat`, `bale`, `eitaa`, `facebook`, `instagram`, `rubika`, `rubino`, `shad`, `soroush`, `telegram`, `tiktok`, `x`, `youtube` را می‌پذیرد. ورودی نام، لینک HTTPS همان پلتفرم و فاصلهٔ دریافت است؛ پاسخ همان `sourceId/runId` و صف آزمون واقعی است. برای پلتفرم‌ها AI فراخوانی نمی‌شود. مسیر `build` آزمون مجدد adapter ثابت و `debug` فقط برای web است. دسترسی تمام عملیات Platform همچنان مختص سوپر ادمین است. DTO منبع همان `adapterKey` را برمی‌گرداند و هیچ مسیر پروفایل، cookie یا credential ندارد. شبکه‌های اجتماعی کاتالوگ دسته یا مانع معادل‌سازی دستهٔ وب‌سایت ایجاد نمی‌کنند. راهنمای نشست و وضعیت آزمون زنده در `docs/SOCIAL-BROWSER-CRAWLERS.md` است.
+
+
+## آیدی و انتخاب شبکه در درخواست منبع ادمین — ADR-0041
+
+در `POST /api/v1/media/source-access-requests` و `PATCH /api/v1/media/source-access-requests/:id`، منبع `social` فیلد اختیاری `platform` از کلیدهای ثبت‌شده دارد. مقدار `url` می‌تواند آیدی خام/با @ یا لینک کامل باشد؛ آیدی بدون شبکه پذیرفته نمی‌شود. سرور همان قواعد مشترک فرانت را اعمال، شبکهٔ ناسازگار را رد و لینک canonical و platform را ذخیره می‌کند. GET درخواست‌ها نیز platform را برمی‌گرداند. درخواست قدیمی شامل لینک کامل و بدون platform سازگار است. `website` همچنان HTTPS می‌خواهد و platform اجتماعی نمی‌پذیرد. این ورودی credential یا اتصال حساب نیست و ثبت آن به‌تنهایی crawl اجرا نمی‌کند.
+
+## پنجرهٔ ورود اجتماعی روی میزبان — ADR-0042
+
+`GET /api/v1/platform/social-browser-sessions` وضعیت پنجرهٔ هر شبکه و `interactiveLoginEnabled` را فقط به سوپر ادمین برمی‌گرداند. `POST /api/v1/platform/social-browser-sessions/:platform/open|close` بدنهٔ JSON خالی و Origin همان پنل یا trusted origin پیکربندی‌شده می‌خواهد؛ platform ثابت است و URL/command قابل ارسال نیست. پاسخ 202 وضعیت opening/open/closing/closed/failed است، نه authentication. باز/بستن audit می‌شود؛ دسترسی Media کافی نیست. در میزبان فاقد قابلیت ورود، open با 409 رد می‌شود؛ CLI با همان پروفایل روش جایگزین روی محیط گرافیکی میزبان است. cookie، شماره و مسیر پروفایل در DTO نیستند. پس از ورود باید آزمون موجود منبع اجرا شود؛ این endpoint به‌تنهایی Source یا Inbox را تغییر نمی‌دهد.

@@ -36,7 +36,7 @@ test("source duplicate detection is scoped to a media, canonical and safe under 
       assert.equal(duplicate.status, 409, await duplicate.clone().text());
       assert.match((await duplicate.json()).error.message, /قبلاً به همین رسانه/);
     }
-    assert.equal((await request("/media/source-access-requests", { sourceType: "social", url: "https://yjc.ir/" })).status, 409);
+    assert.equal((await request("/media/source-access-requests", { sourceType: "social", url: "https://yjc.ir/" })).status, 400);
     actor = "other";
     assert.equal((await create("https://yjc.ir/")).status, 201);
     actor = "owner";

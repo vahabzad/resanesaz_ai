@@ -13,7 +13,10 @@
     "./platform-articles": "./src/platform-articles.ts",
     "./platform-admins": "./src/platform-admins.ts",
     "./media": "./src/media.ts",
-    "./media-setup": "./src/media-setup.ts"
+    "./media-setup": "./src/media-setup.ts",
+    "./social-platforms": "./src/social-platforms.ts",
+    "./social-source": "./src/social-source.ts",
+    "./social-sessions": "./src/social-sessions.ts"
   },
   "scripts": {
     "build": "tsc --noEmit",

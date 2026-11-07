@@ -26,7 +26,7 @@ test("source drafts are removable and private until atomic setup completion, inc
     await database.insert(schema.membership).values([["owner", "m1", "owner"], ["other", "m2", "owner"], ["viewer", "m1", "viewer"]].map(([userId, organizationId, role]) => ({ id: userId, userId, organizationId, role, createdAt: new Date() })));
     const first = await data(await request("/media/source-access-requests", { sourceType: "website", url: "https://one.example.test", categoryMode: "all", categoryIds: [] }), 201);
     assert.equal(first.status, "draft");
-    const kept = await data(await request("/media/source-access-requests", { sourceType: "social", url: "https://social.example.test/channel" }), 201);
+    const kept = await data(await request("/media/source-access-requests", { sourceType: "social", url: "https://t.me/example" }), 201);
     await database.insert(schema.sourceAccessRequest).values({ id: "legacy", mediaId: "m1", requestedBy: "owner", sourceType: "website", name: "Legacy", url: "https://legacy.example.test", status: "pending" });
     const own = await data(await request("/media/source-access-requests"));
     assert.equal(own.find((row: { id: string }) => row.id === "legacy").status, "draft");
@@ -67,7 +67,7 @@ test("source drafts are removable and private until atomic setup completion, inc
     assert.equal(events.length, 1);
     // Completion and deletion serialize against the same Media lock.
     actor = "other";
-    const racing = await data(await request("/media/source-access-requests", { sourceType: "social", url: "https://race.example.test" }), 201);
+    const racing = await data(await request("/media/source-access-requests", { sourceType: "social", url: "https://t.me/racing" }), 201);
     const [removeResult, completeResult] = await Promise.all([
       request(`/media/source-access-requests/${racing.id}`, undefined, "DELETE"),
       request("/media/setup", { ...preferences, setupCompleted: true }, "PATCH"),

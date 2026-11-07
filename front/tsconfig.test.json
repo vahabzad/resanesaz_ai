@@ -15,7 +15,8 @@
     "lib/site-seo.ts",
     "lib/editorial-prompt-presets.ts",
     "components/platform/source-run-status.tsx",
-    "components/platform/crawler-build-report.tsx"
+    "components/platform/crawler-build-report.tsx",
+    "lib/editorial-activity.ts"
   ],
   "exclude": [
     "node_modules",

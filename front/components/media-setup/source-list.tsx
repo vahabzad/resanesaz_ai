@@ -5,6 +5,8 @@ import { Check, Globe2, MessagesSquare, Pencil, Save, Trash2, X } from "lucide-r
 import type { MediaSourceAccessRequest, SourceAccessInput } from "@/lib/contracts/media-setup";
 import { sourceRequestKey } from "@/lib/contracts/media-setup";
 import type { PlatformCategory } from "@/lib/contracts/platform-categories";
+import { detectSocialPlatform } from "../../lib/contracts/social-source";
+import { socialPlatformLabels } from "../../lib/contracts/social-platforms";
 import { SourceInputFields } from "./source-input-fields";
 
 export type SourceListItem = SourceAccessInput & { id: string; saved: boolean; status: MediaSourceAccessRequest["status"] };
@@ -23,9 +25,9 @@ export function SourceList({ items, categories, busy, setupCompleted, onEdit, on
   function close() { setEditing(null); setError(""); onEditingChange(false); requestAnimationFrame(() => editButton.current?.focus({ preventScroll: true })); }
   function begin(item: SourceListItem, button: HTMLButtonElement) {
     editButton.current = button;
-    setDraft({ sourceType: item.sourceType, url: item.url, ...(item.sourceType === "website" ? { categoryMode: item.categoryMode ?? "selected", categoryIds: [...item.categoryIds ?? []] } : {}) });
+    setDraft({ sourceType: item.sourceType, url: item.url, ...(item.platform ? { platform: item.platform } : {}), ...(item.sourceType === "website" ? { categoryMode: item.categoryMode ?? "selected", categoryIds: [...item.categoryIds ?? []] } : {}) });
     setError(""); setEditing(item.id); onEditingChange(true);
-    requestAnimationFrame(() => { editor.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); editor.current?.querySelector<HTMLInputElement>('input[type="url"]')?.focus({ preventScroll: true }); });
+    requestAnimationFrame(() => { editor.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }); editor.current?.querySelector<HTMLInputElement>('input[type="url"], input[type="text"]')?.focus({ preventScroll: true }); });
   }
   async function save(event: FormEvent, item: SourceListItem) {
     event.preventDefault(); setError("");
@@ -40,10 +42,11 @@ export function SourceList({ items, categories, busy, setupCompleted, onEdit, on
       const editable = !item.saved || (!setupCompleted && (item.status === "draft" || item.status === "pending"));
       let hostname = item.url;
       try { hostname = new URL(item.url).hostname.replace(/^www\./, ""); } catch { /* Display the entered value until validated. */ }
+      const platform = item.platform ?? detectSocialPlatform(item.url);
       const Icon = item.sourceType === "website" ? Globe2 : MessagesSquare;
       const duplicate = items.slice(0, index).some(other => sourceRequestKey(other.url) === sourceRequestKey(item.url));
       return <article key={item.id} className={`setup-source-card${editing === item.id ? " editing" : ""}`}>
-        <div className="setup-source-card-header"><div className="setup-source-identity"><i><Icon size={19} /></i><div><b dir="ltr">{hostname}</b><span>{item.sourceType === "website" ? "وب‌سایت خبری" : "شبکهٔ اجتماعی"}</span></div></div><span className={`setup-source-status ${item.saved ? item.status : "unsaved"}`}>{item.saved && ["draft", "access_granted"].includes(item.status) ? <Check size={13} /> : null}{item.saved ? statusLabels[item.status] : "هنوز ذخیره نشده"}</span><div className="setup-source-actions">{editable && <><button type="button" disabled={busy || editing !== null} onClick={event => begin(item, event.currentTarget)} aria-label={`ویرایش منبع ${hostname}`}><Pencil size={14} />ویرایش</button><button type="button" className="remove" disabled={busy || editing !== null} onClick={() => onRemove(item)} aria-label={`حذف منبع ${hostname}`}><Trash2 size={14} />حذف</button></>}</div></div>
+        <div className="setup-source-card-header"><div className="setup-source-identity"><i><Icon size={19} /></i><div><b dir="ltr">{hostname}</b><span>{item.sourceType === "website" ? "وب‌سایت خبری" : platform ? socialPlatformLabels[platform] : "شبکهٔ اجتماعی"}</span></div></div><span className={`setup-source-status ${item.saved ? item.status : "unsaved"}`}>{item.saved && ["draft", "access_granted"].includes(item.status) ? <Check size={13} /> : null}{item.saved ? statusLabels[item.status] : "هنوز ذخیره نشده"}</span><div className="setup-source-actions">{editable && <><button type="button" disabled={busy || editing !== null} onClick={event => begin(item, event.currentTarget)} aria-label={`ویرایش منبع ${hostname}`}><Pencil size={14} />ویرایش</button><button type="button" className="remove" disabled={busy || editing !== null} onClick={() => onRemove(item)} aria-label={`حذف منبع ${hostname}`}><Trash2 size={14} />حذف</button></>}</div></div>
         <p className="setup-source-url" dir="ltr">{item.url}</p>
         <div className="setup-source-categories"><b>دسته‌بندی‌های انتخاب‌شده</b>{item.sourceType === "social" ? <p>برای شبکهٔ اجتماعی دسته‌بندی انتخاب نمی‌شود.</p> : item.categoryMode === "all" ? <div className="setup-source-chips"><span className="all">همهٔ دسته‌ها</span><small>همهٔ دسته‌بندی‌های این منبع درخواست می‌شوند.</small></div> : <div className="setup-source-chips">{item.categoryIds?.length ? item.categoryIds.map(key => { const category = categories.find(category => category.id === key); return <span key={key} className={category ? "" : "unavailable"}>{category?.nameFa ?? "دستهٔ خارج از دسترس"}</span>; }) : <span className="unavailable">هنوز دسته‌بندی مشخص نشده است</span>}</div>}</div>
         {duplicate && <p className="setup-source-warning">این منبع در فهرست تکراری است؛ لینک را ویرایش یا ردیف اضافه را حذف کنید.</p>}

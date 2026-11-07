@@ -7,7 +7,18 @@ export type EditorialWorkspace = {
   sections: ManagedSection[];
   policies: { id: string; instructions: string; settingsSnapshot: EditorialSettingsSnapshot | null; actorUserId: string | null; createdAt: string }[];
   platformConfig: PlatformEditorialConfig | null;
-  inputOptions: { sources: { id: string; name: string }[]; categories: string[] };
+  inputOptions: { sources: { id: string; name: string; url?: string }[]; categories: string[] };
+};
+export type EditorialQueueWorkspace = {
+  pagination: { page: number; pageSize: number; total: number; pageCount: number };
+  jobs: Array<{ id: string; sectionId: string; sectionName: string; serviceStopped: boolean; title: string; status: string; attempts: number; errorCode: string | null; storyId: string | null; trigger: string; createdAt: string; finishedAt: string | null }>;
+  counts: Array<{ status: string; count: number }>;
+  activity: Array<{ sectionId: string; queued: number; running: number; succeeded: number; failed: number; reviewRequired: number; cancelled: number; lastJobAt: string | null; lastFinishedAt: string | null }>;
+};
+export type EditorialJobDetail = {
+  id: string; title: string; sectionName: string; status: string; errorCode: string | null; attempts: number; createdAt: string; finishedAt: string | null;
+  diagnosis: { title: string; explanation: string; action: string; reviewRequired: boolean; canRetry: boolean };
+  input: { title: string; content: string; sourceName: string };
 };
 export type EditorialVersion = { id: string; revision: number; title: string; lead: string; body: string; sectionId: string; secondarySectionIds: string[]; sourceIds: string[]; renditions: EditorialRenditions; policyId: string; imageUrl: string | null; actorUserId: string | null; createdAt: string };
 export type EditorialDetail = {

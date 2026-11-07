@@ -68,7 +68,7 @@ test("invalid or undersampled crawlers never pass the activation gate", async ()
   await assert.rejects(buildCrawler("https://example.test/", "web", new AbortController().signal, async () => {}, {
     fetch: fetchPage, generate: async () => { attempts += 1; return {...recipe, bodySelectors: [".missing"]}; },
   }), (error: unknown) => error instanceof CrawlerBuildError && error.code === "CRAWLER_VALIDATION_FAILED" && error.report?.passed === false);
-  assert.equal(attempts, 3);
+  assert.equal(attempts, 2); // Identical effective recipes stop instead of making a blind third attempt.
   await assert.rejects(buildCrawler("https://example.test/", "web", new AbortController().signal, async () => {}, {
     fetch: async (url) => ({finalUrl:url,body:url.endsWith("/") ? '<div class="latest"><a href="/posts/one">خبر آزمایشی منفرد</a></div>' : `<h1 class="headline">خبر منفرد</h1><div class="story-text">${text}</div>`}), generate: async () => recipe,
   }), (error: unknown) => error instanceof CrawlerBuildError && error.report?.samples.length === 1 && !error.report.passed);

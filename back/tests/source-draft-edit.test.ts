@@ -43,9 +43,9 @@ test("editing a source draft persists its own categories and URL, protects other
     assert.deepEqual(sections.find(row => row.mediaId === "m1")!.settings.sourceUrls, [newUrl]);
     assert.equal(sections.find(row => row.mediaId === "m1")!.revision, 2);
     assert.deepEqual(sections.find(row => row.mediaId === "m2")!.settings.sourceUrls, [original.url]);
-    const social = await data(await request(path, { sourceType: "social", url: "https://social.example.test/channel" }, "PATCH"));
+    const social = await data(await request(path, { sourceType: "social", url: "https://t.me/example" }, "PATCH"));
     assert.equal(social.categoryMode, null); assert.deepEqual(social.categoryIds, []);
-    assert.equal((await request(path, { sourceType: "social", url: "https://social.example.test/channel", categoryMode: "all" }, "PATCH")).status, 400);
+    assert.equal((await request(path, { sourceType: "social", url: "https://t.me/example", categoryMode: "all" }, "PATCH")).status, 400);
     const [editResult, completed] = await Promise.all([
       request(path, { ...original, categoryIds: ["cat2"] }, "PATCH"),
       request("/media/setup", { ...preferences, setupCompleted: true }, "PATCH"),

@@ -1,10 +1,11 @@
+import type { SourceAdapter } from "@media/contracts/social-platforms";
 export type SourceStatus = "active" | "degraded" | "failed" | "paused" | "building";
 
 export type SourceSummary = {
   id: string;
   name: string;
   url: string;
-  adapterKey: "web" | "rss";
+  adapterKey: SourceAdapter;
   status: SourceStatus;
   enabled: boolean;
   executionBlocked: boolean;
@@ -72,6 +73,6 @@ export type PlatformSourcesWorkspace = {
 };
 
 export type CrawlerValidationReport = {
-  passed: boolean; checkedAt: string; discovered: number; attempts: number;
-  samples: Array<{ url: string; passed: boolean; title: string | null; contentLength: number; errorCode: string | null; categories?: string[]; categoryStatus?: "found" | "missing" | "not_exposed" }>;
+  passed: boolean; checkedAt: string; discovered: number; attempts: number; terminationReason?: string; discoveryError?: string; sampling?: { probed: number; layouts: number; requests: number; maxRequests: number };
+  samples: Array<{ url: string; passed: boolean; title: string | null; contentLength: number; errorCode: string | null; categories?: string[]; categoryStatus?: "found" | "missing" | "not_exposed"; diagnostics?: { layout: string; issues: Array<{ code: string; stage: "title" | "body" | "category" | "document"; repairable: boolean }>; metrics: Record<string, number> } }>;
 };

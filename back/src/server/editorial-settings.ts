@@ -1,20 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { articleVersion, storySource, editorialJob, editorialPolicy, editorialSection, mediaInboxItem, mediaSourceSubscription, platformEditorialConfig, rawArticle, source, sourceAccessRequest } from "@/db/schema";
 import { db } from "./database";
 import { recordAuditEvent } from "./audit";
 import { EditorialError } from "./editorial-errors";
 import type { EditorialSettingsSnapshot, SectionSettings } from "@media/contracts/editorial-settings";
-import { defaultEditorialInstructions, defaultSocialInstructions, defaultSocialOutput } from "@media/contracts/editorial-settings";
+import { defaultEditorialInstructions, defaultSocialInstructions, defaultSocialOutput, defaultAutomaticFreshness } from "@media/contracts/editorial-settings";
 import { socialOutputSchema } from "./editorial-social-output";
 import { categoryMappingReady, canonicalArticleCategories } from "./category-mappings";
+import { automaticInputConditions, excludedAutomaticJob, resumedAutomaticSettings } from "./editorial-freshness";
 import { editorialSourceCategoryAccess } from "./media-source-category-access";
 
 const id = z.string().trim().min(1).max(128);
 const range = z.number().int().min(0).max(100);
-export const sectionSettingsSchema = z.object({ language: z.enum(["fa", "en", "ar", "tr", "fr", "de", "es", "ru"]).default("fa"), socialOutput: socialOutputSchema.optional(), autoReceivedSince: z.iso.datetime({ offset: true }).nullable().optional(), instructions: z.string().trim().min(20).max(10000).optional(), socialInstructions: z.string().trim().min(20).max(5000).optional(), factionId: id.nullable(), viewpointStrength: range, humor: range, formality: range, sourceIds: z.array(id).max(100), sourceUrls: z.array(z.string().url().max(2048)).max(100).optional(), categories: z.array(z.string().trim().min(1).max(200)).max(100) }).strict();
+export const sectionSettingsSchema = z.object({ sourceAttribution: z.object({ website: z.enum(["named", "omit"]), social: z.enum(["named", "omit"]) }).strict().optional(), language: z.enum(["fa", "en", "ar", "tr", "fr", "de", "es", "ru"]).default("fa"), socialOutput: socialOutputSchema.optional(), autoReceivedSince: z.iso.datetime({ offset: true }).nullable().optional(), autoFreshness: z.object({ maxAgeHours: z.number().int().min(1).max(720).nullable(), unknownDatePolicy: z.enum(["skip", "received"]), resumeMode: z.enum(["new_only", "continue"]) }).strict().optional(), instructions: z.string().trim().min(20).max(10000).optional(), socialInstructions: z.string().trim().min(20).max(5000).optional(), factionId: id.nullable(), viewpointStrength: range, humor: range, formality: range, sourceIds: z.array(id).max(100), sourceUrls: z.array(z.string().url().max(2048)).max(100).optional(), categories: z.array(z.string().trim().min(1).max(200)).max(100) }).strict();
 export const managedSectionInput = z.object({ name: z.string().trim().min(2).max(80), startAutoNow: z.boolean().optional(), parentId: id.nullable().optional(), settings: sectionSettingsSchema, autoEnabled: z.boolean().default(false), autoIntervalMinutes: z.number().int().min(1).max(1440).default(10), autoBatchSize: z.number().int().min(1).max(10).default(3) }).strict();
 export const updateSectionInput = managedSectionInput.extend({ expectedRevision: z.number().int().min(1), archived: z.boolean(), paused: z.boolean().optional() });
 export const platformConfigInput = z.object({ expectedRevision: z.number().int().min(0), instructions: z.string().trim().min(20).max(10000), factions: z.array(z.object({ id, name: z.string().trim().min(2).max(80), viewpoint: z.string().trim().min(20).max(5000), enabled: z.boolean() }).strict()).max(30) }).strict().refine(v => new Set(v.factions.map(f => f.id)).size === v.factions.length && new Set(v.factions.map(f => f.name)).size === v.factions.length);
@@ -39,11 +40,11 @@ export async function savePlatformEditorialConfig(actorUserId: string, correlati
   }).catch(conflict);
 }
 export async function editorialInputOptions(mediaId: string, executor: Pick<typeof db, "select"> = db) {
-  const inbox = await executor.select({ id: source.id, name: source.name, categories: canonicalArticleCategories }).from(mediaInboxItem)
+  const inbox = await executor.select({ id: source.id, name: source.name, url: source.url, categories: canonicalArticleCategories }).from(mediaInboxItem)
     .innerJoin(rawArticle, eq(rawArticle.id, mediaInboxItem.rawArticleId)).innerJoin(source, eq(source.id, rawArticle.sourceId)).where(eq(mediaInboxItem.mediaId, mediaId));
-  const subscriptions = await executor.select({ id: source.id, name: source.name }).from(mediaSourceSubscription).innerJoin(source, eq(source.id, mediaSourceSubscription.sourceId))
+  const subscriptions = await executor.select({ id: source.id, name: source.name, url: source.url }).from(mediaSourceSubscription).innerJoin(source, eq(source.id, mediaSourceSubscription.sourceId))
     .where(and(eq(mediaSourceSubscription.mediaId, mediaId), eq(mediaSourceSubscription.enabled, true)));
-  const sources = [...new Map([...subscriptions, ...inbox].map(s => [s.id, { id: s.id, name: s.name }])).values()].sort((a, b) => a.name.localeCompare(b.name));
+  const sources = [...new Map([...subscriptions, ...inbox].map(s => [s.id, { id: s.id, name: s.name, url: s.url }])).values()].sort((a, b) => a.name.localeCompare(b.name));
   return { sources, categories: [...new Set(inbox.flatMap(s => s.categories))].sort() };
 }
 export async function validateSectionSettings(mediaId: string, settings: SectionSettings, executor: Pick<typeof db, "select"> = db) {
@@ -62,9 +63,8 @@ export async function createManagedSection(actor: Actor, input: z.infer<typeof m
   return db.transaction(async tx => {
     await validateSectionParent(actor.mediaId, null, input.parentId ?? null, false, tx);
     await validateSectionSettings(actor.mediaId, input.settings, tx);
-    if (input.autoEnabled && !await getPlatformEditorialConfig(tx)) throw new EditorialError("ابتدا ادمین باید تنظیمات پایه را ثبت کند.");
     const { startAutoNow, ...values } = input;
-    const settings = { ...input.settings, autoReceivedSince: startAutoNow ? new Date().toISOString() : input.settings.autoReceivedSince ?? null };
+    const settings = { ...input.settings, autoFreshness: input.settings.autoFreshness ?? defaultAutomaticFreshness, autoReceivedSince: startAutoNow ? new Date().toISOString() : input.settings.autoReceivedSince ?? null };
     const [section] = await tx.insert(editorialSection).values({ id: randomUUID(), mediaId: actor.mediaId, ...values, settings, autoActorUserId: input.autoEnabled ? actor.actorUserId : null }).returning();
     await recordAuditEvent({ ...actor, action: "editorial.section.created", targetType: "section", targetId: section.id, metadata: { autoReceivedSince: settings.autoReceivedSince } }, tx);
     return section;
@@ -78,18 +78,19 @@ export async function updateManagedSection(actor: Actor, id: string, input: z.in
     if (!previous) throw new EditorialError("سرویس پیدا نشد.", 404);
     await validateSectionParent(actor.mediaId, id, input.parentId === undefined ? previous.parentId : input.parentId, input.archived, tx, lockedSections);
     if (!isDeepStrictEqual(previous.settings, input.settings)) await validateSectionSettings(actor.mediaId, input.settings, tx);
-    if (input.autoEnabled && !input.archived && !await getPlatformEditorialConfig(tx)) throw new EditorialError("ابتدا ادمین باید تنظیمات پایه را ثبت کند.");
-    const settings = { ...input.settings, autoReceivedSince: input.startAutoNow ? new Date().toISOString() : input.settings.autoReceivedSince === undefined ? previous.settings.autoReceivedSince ?? null : input.settings.autoReceivedSince };
+    let settings = { ...input.settings, autoFreshness: input.settings.autoFreshness ?? previous.settings.autoFreshness, autoReceivedSince: input.startAutoNow ? new Date().toISOString() : input.settings.autoReceivedSince === undefined ? previous.settings.autoReceivedSince ?? null : input.settings.autoReceivedSince };
+    if ((!previous.autoEnabled && input.autoEnabled) || (previous.paused && input.paused === false)) settings = resumedAutomaticSettings(settings) as typeof settings;
     const startChanged = (previous.settings.autoReceivedSince ?? null) !== settings.autoReceivedSince;
+    const freshnessChanged = !isDeepStrictEqual(previous.settings.autoFreshness, settings.autoFreshness);
     const [section] = await tx.update(editorialSection).set({ ...(startChanged ? { lastEnqueuedAt: null, autoErrorCode: null } : {}), name: input.name, parentId: input.parentId === undefined ? previous.parentId : input.parentId, settings, archived: input.archived, paused: input.paused ?? previous.paused, autoEnabled: input.archived ? false : input.autoEnabled, autoIntervalMinutes: input.autoIntervalMinutes, autoBatchSize: input.autoBatchSize, autoActorUserId: input.autoEnabled ? actor.actorUserId : null, revision: sql`${editorialSection.revision} + 1` })
       .where(and(eq(editorialSection.id, id), eq(editorialSection.mediaId, actor.mediaId), eq(editorialSection.revision, input.expectedRevision))).returning();
     if (!section) throw new EditorialError("سرویس تغییر کرده؛ تنظیمات تازه را باز کنید.");
     if (input.archived || section.paused || !section.autoEnabled) await tx.update(editorialJob).set({ status: "cancelled", claimToken: null, leaseUntil: null, finishedAt: new Date(), errorCode: "SERVICE_STOPPED" }).where(and(eq(editorialJob.sectionId, id), eq(editorialJob.mediaId, actor.mediaId), sql`${editorialJob.status} in ('queued','running')`, (input.archived || section.paused) ? sql`true` : eq(editorialJob.trigger, "automatic")));
-    if (startChanged && settings.autoReceivedSince) {
+    if (startChanged || freshnessChanged) {
       // The service row lock serializes this cancellation with enqueue and completion.
-      await tx.update(editorialJob).set({ status: "cancelled", claimToken: null, leaseUntil: null, finishedAt: new Date(), errorCode: "AUTO_START_CHANGED" }).where(and(
+      await tx.update(editorialJob).set({ status: "cancelled", claimToken: null, leaseUntil: null, finishedAt: new Date(), errorCode: startChanged ? "AUTO_START_CHANGED" : "AUTO_FRESHNESS_CHANGED" }).where(and(
         eq(editorialJob.mediaId, actor.mediaId), eq(editorialJob.sectionId, id), eq(editorialJob.trigger, "automatic"), inArray(editorialJob.status, ["queued", "running"]),
-        sql`NOT EXISTS (SELECT 1 FROM ${rawArticle} WHERE ${rawArticle.id} = ${editorialJob.rawArticleId} AND ${rawArticle.ingestedAt} >= ${settings.autoReceivedSince}::timestamptz)`
+        excludedAutomaticJob(settings)
       ));
     }
     await recordAuditEvent({ ...actor, action: input.archived ? "editorial.section.archived" : "editorial.section.updated", targetType: "section", targetId: id, metadata: { revision: section.revision, autoReceivedSince: settings.autoReceivedSince } }, tx);
@@ -98,7 +99,10 @@ export async function updateManagedSection(actor: Actor, id: string, input: z.in
 }
 export async function setSectionPaused(actor: Actor, id: string, expectedRevision: number, paused: boolean) {
   return db.transaction(async tx => {
-    const [section] = await tx.update(editorialSection).set({ paused, revision: sql`${editorialSection.revision} + 1`, ...(paused ? {} : { lastEnqueuedAt: null, autoErrorCode: null }) })
+    const [previous] = await tx.select().from(editorialSection).where(and(eq(editorialSection.id, id), eq(editorialSection.mediaId, actor.mediaId), eq(editorialSection.archived, false))).for("update");
+    if (!previous) throw new EditorialError("سرویس تغییر کرده یا حذف شده؛ دوباره بارگذاری کنید.");
+    const settings = previous.paused && !paused ? resumedAutomaticSettings(previous.settings) : previous.settings;
+    const [section] = await tx.update(editorialSection).set({ paused, settings, revision: sql`${editorialSection.revision} + 1`, ...(paused ? {} : { lastEnqueuedAt: null, autoErrorCode: null }) })
       .where(and(eq(editorialSection.id, id), eq(editorialSection.mediaId, actor.mediaId), eq(editorialSection.archived, false), eq(editorialSection.revision, expectedRevision))).returning();
     if (!section) throw new EditorialError("سرویس تغییر کرده یا حذف شده؛ دوباره بارگذاری کنید.");
     if (paused) await tx.update(editorialJob).set({ status: "cancelled", claimToken: null, leaseUntil: null, finishedAt: new Date(), errorCode: "SERVICE_STOPPED" })
@@ -118,7 +122,7 @@ export async function getSectionCandidates(mediaId: string, sectionId: string, u
   if (!section) throw new EditorialError("سرویس فعال پیدا نشد.", 404);
   const conditions = [eq(mediaInboxItem.mediaId, mediaId), eq(rawArticle.status, "new"), sql`length(trim(${rawArticle.content})) >= 80`, categoryMappingReady, editorialSourceCategoryAccess(mediaId)];
   if (unprocessed) {
-    if (section.settings.autoReceivedSince) conditions.push(gte(rawArticle.ingestedAt, new Date(section.settings.autoReceivedSince)));
+    conditions.push(automaticInputConditions(section.settings));
     conditions.push(sql`NOT EXISTS (SELECT 1 FROM ${editorialJob} WHERE ${editorialJob.mediaId} = ${mediaInboxItem.mediaId} AND ${editorialJob.sectionId} = ${sectionId} AND ${editorialJob.inputKey} = ${rawArticle.id})`);
     conditions.push(sql`NOT EXISTS (SELECT 1 FROM ${storySource} JOIN ${articleVersion} ON ${articleVersion.storyId} = ${storySource.storyId} WHERE ${storySource.mediaId} = ${mediaInboxItem.mediaId} AND ${storySource.rawArticleId} = ${rawArticle.id} AND ${articleVersion.sectionId} = ${sectionId})`);
   }

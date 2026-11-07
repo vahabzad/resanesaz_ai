@@ -1,3 +1,4 @@
+import { socialPlatformKeys, socialPlatformLabels } from "../../lib/contracts/social-platforms";
 import { Search } from "lucide-react";
 
 export type CatalogFilters = {
@@ -23,7 +24,7 @@ export function SourceCatalogControls({ filters, onChange }: {
       <option value="">همهٔ وضعیت‌ها</option><option value="active">فعال</option><option value="degraded">نیازمند بررسی</option><option value="failed">ناموفق</option><option value="paused">متوقف</option><option value="building">در حال ساخت</option><option value="open-run">دارای اجرای باز</option>
     </select></label>
     <label><span>نوع کراولر</span><select value={filters.adapter} onChange={(event) => onChange({ ...filters, adapter: event.target.value })}>
-      <option value="">همهٔ انواع</option><option value="web">وب</option><option value="rss">RSS</option>
+      <option value="">همهٔ انواع</option><option value="web">وب</option><option value="rss">RSS</option>{socialPlatformKeys.map(key => <option key={key} value={key}>{socialPlatformLabels[key]}</option>)}
     </select></label>
     <label><span>دسترسی رسانه‌ها</span><select value={filters.visibility} onChange={(event) => onChange({ ...filters, visibility: event.target.value })}>
       <option value="">همهٔ حالت‌ها</option><option value="public">عمومی</option><option value="catalog-hidden">پنهان از کاتالوگ</option><option value="delivery-disabled">قطع دریافت رسانه‌ها</option>

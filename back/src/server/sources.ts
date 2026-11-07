@@ -1,3 +1,5 @@
+import type { SourceAdapter } from "@media/contracts/social-platforms";
+import { isSocialPlatform, normalizeSocialSource } from "../social/platforms";
 import { randomUUID } from "node:crypto";
 import { and, count, desc, eq, inArray, isNull, isNotNull, max } from "drizzle-orm";
 
@@ -38,7 +40,7 @@ export async function getPlatformSourcesWorkspace(): Promise<PlatformSourcesWork
   }).from(crawlRun).innerJoin(source, eq(source.id, crawlRun.sourceId)).orderBy(desc(crawlRun.createdAt)).limit(30);
   return {
     sources: rows.map((row) => ({
-      id: row.id, name: row.name, url: row.url, adapterKey: row.adapterKey as "web" | "rss",
+      id: row.id, name: row.name, url: row.url, adapterKey: row.adapterKey as SourceAdapter,
       status: row.status as SourceStatus, enabled: row.enabled, executionBlocked: false,
       scheduleMinutes: row.scheduleMinutes, lastErrorCode: row.lastErrorCode,
       visibleToMedia: row.visibleToMedia, mediaDeliveryEnabled: row.mediaDeliveryEnabled, archivedAt: row.archivedAt?.toISOString() ?? null,
@@ -103,7 +105,7 @@ export async function getSourcesWorkspace(mediaId: string): Promise<SourcesWorks
     .orderBy(desc(crawlRun.createdAt)).limit(8);
 
   const sources = subscribedRows.map((row) => ({
-    ...row, adapterKey: row.adapterKey as "web" | "rss", status: row.status as SourceStatus,
+    ...row, adapterKey: row.adapterKey as SourceAdapter, status: row.status as SourceStatus,
     executionBlocked: false, articleCount: articleCountBySource.get(row.id) ?? 0,
     lastRunAt: row.lastRunAt?.toISOString() ?? null, lastSuccessAt: row.lastSuccessAt?.toISOString() ?? null,
   }));
@@ -115,7 +117,7 @@ export async function getSourcesWorkspace(mediaId: string): Promise<SourcesWorks
     sources,
     availableSources: catalogRows.filter((item) => !subscribedIds.has(item.id)).map((item) => ({
       ...item,
-      adapterKey: item.adapterKey as "web" | "rss",
+      adapterKey: item.adapterKey as SourceAdapter,
       categories: [...(categoriesBySource.get(item.id) ?? new Set<string>())].sort((a, b) => a.localeCompare(b, "fa")),
     })),
     recentRuns,
@@ -152,9 +154,10 @@ async function readRunLog(run: { id: string; sourceName: string; status: string;
 }
 
 export async function createPlatformSource(input: {
-  actorUserId: string; name: string; url: string; scheduleMinutes: number; correlationId: string; adapterKey: "web" | "rss"; sourceAccessRequestId?: string;
+  actorUserId: string; name: string; url: string; scheduleMinutes: number; correlationId: string; adapterKey: SourceAdapter; sourceAccessRequestId?: string;
 }, validateUrl = assertPublicHttpsUrl) {
-  const safeUrl = await validateUrl(input.url);
+  const sourceUrl = isSocialPlatform(input.adapterKey) ? normalizeSocialSource(input.adapterKey, input.url) : input.url;
+  const safeUrl = await validateUrl(sourceUrl);
   const sourceId = `source_${randomUUID()}`;
   const definitionId = `crawler_${randomUUID()}`;
   const versionId = `crawler_version_${randomUUID()}`;
@@ -164,7 +167,9 @@ export async function createPlatformSource(input: {
     await transaction.insert(crawlerDefinition).values({ id: definitionId, sourceId, adapterKey: input.adapterKey });
     await transaction.insert(crawlerVersion).values({
       id: versionId, definitionId, version: 1, status: "draft",
-      config: input.adapterKey === "rss"
+      config: isSocialPlatform(input.adapterKey)
+        ? { platform: input.adapterKey, runtime: "browser", adapterVersion: 1, contractVersion: "2" }
+        : input.adapterKey === "rss"
         ? { feedUrl: safeUrl.toString(), contractVersion: "2" }
         : { listingUrl: safeUrl.toString(), contractVersion: "2" },
       createdBy: input.actorUserId,
@@ -201,8 +206,10 @@ export async function enqueueCrawlerBuild(input: { sourceId: string; actorUserId
     if (mode === "debug" && existing.adapterKey !== "web") return { sourceId: input.sourceId, runId: null, accepted: false, errorCode: "DEBUG_WEB_ONLY" };
     const [latest] = await transaction.select({ version: max(crawlerVersion.version) }).from(crawlerVersion).where(eq(crawlerVersion.definitionId, definition.id));
     let debugContext: CrawlerDebugContext | undefined;
-    if (mode === "debug") {
+    let hasActiveVersion = false;
+    {
       const versions = await transaction.select().from(crawlerVersion).where(eq(crawlerVersion.definitionId, definition.id)).orderBy(desc(crawlerVersion.version));
+      hasActiveVersion = versions.some(version => version.status === "active");
       const previous = versions.find((version) => version.status === "active") ?? versions[0];
       const errors = await transaction.select({ url: crawlRunEvent.articleUrl, errorCode: crawlRunEvent.errorCode, durationMs: max(crawlRunEvent.durationMs) }).from(crawlRunEvent).innerJoin(crawlRun, eq(crawlRun.id, crawlRunEvent.runId)).where(and(eq(crawlRun.sourceId, input.sourceId), previous ? eq(crawlRun.crawlerVersionId, previous.id) : undefined, isNotNull(crawlRunEvent.articleUrl), isNotNull(crawlRunEvent.errorCode), inArray(crawlRunEvent.level, ["warn", "error"]))).groupBy(crawlRunEvent.articleUrl, crawlRunEvent.errorCode).orderBy(desc(max(crawlRunEvent.createdAt))).limit(30);
       let recipe: CrawlerDebugContext["recipe"] = null;
@@ -215,11 +222,11 @@ export async function enqueueCrawlerBuild(input: { sourceId: string; actorUserId
           try { const url = new URL(sample.url); return url.origin === new URL(existing.url).origin && !url.username && !url.password ? [safeArticleLogUrl(url.toString())] : []; } catch { return []; }
         }) : [];
       }))].slice(0, 500);
-      debugContext = { previousVersionId: previous?.id ?? null, recipe, knownArticleUrls, failures: errors.filter((error) => error.errorCode && /^[A-Z0-9_]{1,80}$/.test(error.errorCode)).map((error) => {
+      debugContext = { operation: mode, previousVersionId: previous?.id ?? null, recipe, knownArticleUrls, failures: [...(existing.lastErrorCode && /^[A-Z0-9_]{1,80}$/.test(existing.lastErrorCode) ? [{ url: null, errorCode: existing.lastErrorCode, durationMs: null }] : []), ...errors.filter((error) => error.errorCode && /^[A-Z0-9_]{1,80}$/.test(error.errorCode)).map((error) => {
         let url: string | null = null;
         try { if (error.url) url = safeArticleLogUrl(error.url); } catch { /* Invalid historical addresses are not sent to the model. */ }
         return { url, errorCode: error.errorCode!, durationMs: error.durationMs === null ? null : Number(error.durationMs) };
-      }).filter((failure) => {
+      })].filter((failure) => {
         const key = `${failure.url}:${failure.errorCode}`;
         if (seenFailures.has(key)) return false;
         seenFailures.add(key);
@@ -230,7 +237,7 @@ export async function enqueueCrawlerBuild(input: { sourceId: string; actorUserId
     const runId = `crawl_run_${randomUUID()}`;
     await transaction.insert(crawlerVersion).values({ id: versionId, definitionId: definition.id, version: (latest.version ?? 0) + 1, status: "draft", config: { contractVersion: "2", mode, ...(debugContext ? { debugContext } : {}) }, createdBy: input.actorUserId });
     await transaction.insert(crawlRun).values({ id: runId, sourceId: input.sourceId, crawlerVersionId: versionId, trigger: mode, correlationId: input.correlationId, requestedBy: input.actorUserId });
-    if (mode === "build") await transaction.update(source).set({ enabled: false, status: "building", lastErrorCode: null, updatedAt: new Date() }).where(eq(source.id, input.sourceId));
+    if (mode === "build" && !hasActiveVersion) await transaction.update(source).set({ enabled: false, status: "building", lastErrorCode: null, updatedAt: new Date() }).where(eq(source.id, input.sourceId));
     if (input.sourceAccessRequestId) {
       const [accessRequest] = await transaction.update(sourceAccessRequest).set({ sourceId: input.sourceId, status: "crawler_queued", reviewedBy: input.actorUserId, reviewedAt: new Date() })
         .where(and(eq(sourceAccessRequest.id, input.sourceAccessRequestId), inArray(sourceAccessRequest.status, ["pending", "crawler_failed"]))).returning();
@@ -273,7 +280,7 @@ export async function pausePlatformSource(input: { sourceId: string; actorUserId
 
 export async function resumePlatformSource(input: { sourceId: string; actorUserId: string; correlationId: string }) {
   const versions = await db.select({ status: crawlerVersion.status, config: crawlerVersion.config }).from(crawlerVersion).innerJoin(crawlerDefinition, eq(crawlerDefinition.id, crawlerVersion.definitionId)).where(eq(crawlerDefinition.sourceId, input.sourceId)).orderBy(desc(crawlerVersion.version));
-  if (versions[0]?.status !== "active" && !(versions[0]?.config.mode === "debug" && versions.some((version) => version.status === "active"))) return null;
+  if (!versions.some(version => version.status === "active")) return null;
   const [updated] = await db.update(source).set({ enabled: true, status: "active", lastErrorCode: null, updatedAt: new Date() }).where(and(eq(source.id, input.sourceId), isNull(source.archivedAt))).returning();
   if (!updated) return null;
   await recordAuditEvent({ mediaId: null, actorUserId: input.actorUserId, action: "platform.source.resumed", targetType: "source", targetId: input.sourceId, correlationId: input.correlationId });

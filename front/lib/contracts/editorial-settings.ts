@@ -1,2 +1,2 @@
-export { editorialLanguages, socialOutputFormats, defaultSocialOutput, defaultEditorialInstructions, defaultPlatformEditorialInstructions, defaultSocialInstructions } from "../../../back/contracts/src/editorial-settings";
-export type { EditorialLanguage, EditorialFaction, PlatformEditorialConfig, SectionSettings, ManagedSection, EditorialSettingsSnapshot, SocialOutputSettings } from "../../../back/contracts/src/editorial-settings";
+export { defaultSourceAttribution, editorialLanguages, socialOutputFormats, defaultSocialOutput, defaultEditorialInstructions, defaultPlatformEditorialInstructions, defaultSocialInstructions, defaultAutomaticFreshness } from "../../../back/contracts/src/editorial-settings";
+export type { SourceAttributionSettings, EditorialLanguage, EditorialFaction, PlatformEditorialConfig, SectionSettings, ManagedSection, EditorialSettingsSnapshot, SocialOutputSettings, AutomaticFreshness } from "../../../back/contracts/src/editorial-settings";

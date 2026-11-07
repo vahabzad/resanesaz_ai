@@ -11,7 +11,7 @@ test("editorial queue schedules scoped inputs once, claims atomically, validates
   const client = new PGlite(); globalThis.__mediaCommandPglite = client;
   const database = drizzle({ client, schema }); await migrate(database, { migrationsFolder: "./db/migrations" });
   const { auth } = await import("../src/server/auth"); const { handleApiRequest } = await import("../src/router");
-  const { runEditorialWorkerCycle, scheduleEditorialJobs, enqueueEditorialJob, changeEditorialJob } = await import("../src/server/editorial-jobs");
+  const { runEditorialWorkerCycle, scheduleEditorialJobs, enqueueEditorialJob, changeEditorialJob, recoverInterruptedEditorialJobs } = await import("../src/server/editorial-jobs");
   const { EditorialRewriteError, validateRewrite } = await import("../src/server/editorial-rewriter");
   let actor = "editor";
   t.mock.method(auth.api, "getSession", async () => ({ user: { id: actor, name: actor, email: `${actor}@test.example` }, session: { activeOrganizationId: actor === "other" ? "m2" : "m1" } }));
@@ -23,7 +23,7 @@ test("editorial queue schedules scoped inputs once, claims atomically, validates
     await database.insert(schema.media).values(["m1", "m2"].map(id => ({ id, name: id, slug: id, createdAt: new Date() })));
     await database.insert(schema.membership).values([ ["editor", "m1", "editor"], ["other", "m2", "owner"], ["viewer", "m1", "viewer"] ].map(([userId, organizationId, role]) => ({ id: userId, userId, organizationId, role, createdAt: new Date() })));
     await database.insert(schema.platformEditorialConfig).values({ id: "cfg", revision: 1, instructions: "Preserve facts and attribution. Never invent quotations.", factions: [] });
-    const settings = { factionId: null, viewpointStrength: 0, humor: 0, formality: 70, sourceIds: ["src"], categories: ["News"] };
+    const settings = { sourceAttribution: { website: "named" as const, social: "omit" as const }, autoFreshness: { maxAgeHours: null, unknownDatePolicy: "received" as const, resumeMode: "continue" as const }, factionId: null, viewpointStrength: 0, humor: 0, formality: 70, sourceIds: ["src"], categories: ["News"] };
     await database.insert(schema.editorialSection).values([{ id: "s1", mediaId: "m1", name: "News", settings, autoEnabled: true, autoActorUserId: "editor", autoBatchSize: 2, autoIntervalMinutes: 10 }, { id: "s2", mediaId: "m2", name: "Other", settings }]);
     await database.insert(schema.source).values({ id: "src", name: "Source", url: "https://source.test", adapterKey: "web" });
     await database.insert(schema.crawlerDefinition).values({ id: "def", sourceId: "src", adapterKey: "web" });
@@ -40,13 +40,28 @@ test("editorial queue schedules scoped inputs once, claims atomically, validates
     assert.equal(await scheduleEditorialJobs(), 0); // Interval and distributed scheduling claim.
     let jobs = (await value(await request("/jobs"))).jobs; assert.equal(jobs.length, 2);
     assert.ok(jobs.every((j: { title: string }) => !j.title.includes("foreign")));
-    const success = async (input: Parameters<typeof validateRewrite>[1]) => ({ title: "عنوان تحریرشده", lead: "لید نمونه", body, sourceKeys: [input.sourceKey], reviewRequired: false });
+    const scopedQueue = await value(await request("/jobs?sectionId=s1&status=failed"));
+    assert.equal(scopedQueue.jobs.length, 0);
+    assert.deepEqual(scopedQueue.counts, [{ status: "queued", count: 2 }]);
+    assert.equal(scopedQueue.activity.find((item: { sectionId: string }) => item.sectionId === "s1").queued, 2);
+    assert.ok(scopedQueue.activity.every((item: { sectionId: string }) => item.sectionId !== "s2"));
+    const foreignFilter = await value(await request("/jobs?sectionId=s2"));
+    assert.equal(foreignFilter.jobs.length, 0); assert.equal(foreignFilter.pagination.total, 0); assert.deepEqual(foreignFilter.counts, []);
+    actor = "other";
+    const foreignMediaQueue = await value(await request("/jobs?sectionId=s1"));
+    assert.deepEqual(foreignMediaQueue.activity, []); assert.deepEqual(foreignMediaQueue.counts, []); assert.deepEqual(foreignMediaQueue.jobs, []);
+    actor = "editor";
+    assert.equal((await value(await request(""))).inputOptions.sources[0].url, "https://source.test");
+    const success = async (input: Parameters<typeof validateRewrite>[1]) => { assert.deepEqual(input.policy.settings.sourceAttribution, settings.sourceAttribution); return { title: "عنوان تحریرشده", lead: "لید نمونه", body, sourceKeys: [input.sourceKey], reviewRequired: false }; };
     let calls = 0;
-    await Promise.all([runEditorialWorkerCycle(async input => { calls++; return success(input); }), runEditorialWorkerCycle(async input => { calls++; return success(input); })]);
+    await Promise.all([runEditorialWorkerCycle(async input => { calls++; const active = await value(await request("/jobs?sectionId=s1")); assert.equal(active.activity[0].running, 1); return success(input); }), runEditorialWorkerCycle(async input => { calls++; return success(input); })]);
     assert.equal(calls, 1);
     let stories = await database.select().from(schema.editorialStory); assert.equal(stories.length, 1); assert.equal(stories[0].status, "ready");
     assert.equal((await database.select().from(schema.editorialApproval)).length, 0);
     assert.equal((await value(await request("?view=ready"))).stories.length, 1);
+    const completedQueue = await value(await request("/jobs?sectionId=s1&status=succeeded"));
+    assert.equal(completedQueue.jobs.length, 1); assert.ok(completedQueue.jobs[0].createdAt); assert.ok(completedQueue.jobs[0].finishedAt);
+    assert.equal(completedQueue.activity[0].succeeded, 1); assert.equal(completedQueue.activity[0].running, 0); assert.ok(completedQueue.activity[0].lastFinishedAt);
     assert.equal((await database.select().from(schema.articleVersion))[0].imageUrl, "https://source.test/image.jpg");
     await value(await request(`/stories/${stories[0].id}/decisions`, { expectedRevision: 1, decision: "approved", note: "Reviewed" }));
     actor = "other"; assert.equal((await value(await request("/jobs"))).jobs.length, 0); assert.equal((await request(`/jobs/${jobs[0].id}/retry`, {})).status, 404); actor = "editor";
@@ -57,6 +72,14 @@ test("editorial queue schedules scoped inputs once, claims atomically, validates
     await runEditorialWorkerCycle(async () => { throw new EditorialRewriteError("CODEX_TIMEOUT"); });
     await value(await request(`/jobs/${failed.id}/retry`, {}));
     await runEditorialWorkerCycle(async input => ({ ...await success(input), reviewRequired: true }));
+    const reviewQueue = await value(await request("/jobs?status=review_required"));
+    assert.equal(reviewQueue.jobs.length, 1); assert.equal(reviewQueue.activity[0].reviewRequired, 1); assert.equal(reviewQueue.activity[0].failed, 0);
+    assert.equal((await value(await request("/jobs?status=failed"))).jobs.length, 0);
+    const reviewDetail = await value(await request(`/jobs/${failed.id}`));
+    assert.equal(reviewDetail.diagnosis.reviewRequired, true); assert.equal(reviewDetail.diagnosis.canRetry, false); assert.equal(reviewDetail.input.content, body);
+    assert.match(reviewDetail.diagnosis.explanation, /دلیل جزئی‌تری/);
+    actor = "other"; assert.equal((await request(`/jobs/${failed.id}`)).status, 404); actor = "editor";
+    assert.equal((await database.select().from(schema.editorialStory)).length, 1); // Review gate never becomes a successful story.
     assert.equal((await request(`/jobs/${failed.id}/retry`, {})).status, 409); // Bounded to three attempts.
     const manual = await enqueueEditorialJob(testActor, "s1", "a");
     const duplicate = await enqueueEditorialJob(testActor, "s1", "a"); assert.equal(duplicate.id, manual.id); assert.equal(duplicate.duplicate, true);
@@ -151,11 +174,30 @@ test("editorial queue schedules scoped inputs once, claims atomically, validates
     const socialSection=await value(await request("/sections",{name:"Social queue",settings:{...settings,socialOutput}}),201);
     const socialJob=await enqueueEditorialJob(testActor,socialSection.id,"c");
     await value(await handleApiRequest(new Request(`http://local.test/api/v1/editorial/sections/${socialSection.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({name:"Social queue",expectedRevision:1,archived:false,settings:{...settings,socialOutput:{...socialOutput,format:"title",prefix:"new prefix",includeImage:true}}})})));
-    await runEditorialWorkerCycle(async input=>{assert.deepEqual(input.policy.settings.socialOutput,socialOutput);return success(input);});
+    const savedAttribution = await value(await handleApiRequest(new Request(`http://local.test/api/v1/editorial/sections/${socialSection.id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "Social queue", expectedRevision: 2, archived: false, settings: { ...settings, sourceAttribution: { website: "omit", social: "omit" }, socialOutput: { ...socialOutput, format: "title", prefix: "new prefix", includeImage: true } } }) })));
+    assert.deepEqual(savedAttribution.settings.sourceAttribution, { website: "omit", social: "omit" });
+    assert.deepEqual((await value(await request(""))).sections.find((s: {id: string}) => s.id === socialSection.id).settings.sourceAttribution, { website: "omit", social: "omit" });
+    await runEditorialWorkerCycle(async input=>{assert.deepEqual(input.policy.settings.socialOutput,socialOutput);assert.deepEqual(input.policy.settings.sourceAttribution,settings.sourceAttribution);assert.equal(input.sourceIdentity?.kind,"website");return success(input);});
     const [socialCompleted]=await database.select().from(schema.editorialJob).where(eq(schema.editorialJob.id,socialJob.id!));
     assert.equal(socialCompleted.status,"succeeded");
     const [socialVersion]=await database.select().from(schema.articleVersion).where(eq(schema.articleVersion.storyId,socialCompleted.storyId!));
     assert.equal(socialVersion.renditions?.social.text,"captured prefix\n\nلید نمونه\n\ncaptured suffix");
     assert.equal(socialVersion.renditions?.social.imageUrl,null);
+    const [recoveryTemplate] = await database.select().from(schema.editorialJob).where(eq(schema.editorialJob.id, socialJob.id!));
+    const recoveredIds = ["recover-ok", "recover-cap", "recover-review", "recover-date", "recover-revoked"];
+    await database.insert(schema.editorialJob).values(recoveredIds.map(id => ({ ...recoveryTemplate, id, inputKey: id, status: "failed", storyId: null, attempts: id === "recover-cap" ? 3 : 1, errorCode: id === "recover-review" ? "CONTENT_REVIEW_REQUIRED" : "WORKER_INTERRUPTED", trigger: id === "recover-date" ? "automatic" : "manual", requestedBy: id === "recover-revoked" ? "viewer" : "editor" })));
+    await database.update(schema.editorialSection).set({ paused: true }).where(eq(schema.editorialSection.id, socialSection.id));
+    assert.equal(await recoverInterruptedEditorialJobs(), 0);
+    await database.update(schema.editorialSection).set({ paused: false, autoEnabled: true, settings: { ...settings, autoFreshness: { maxAgeHours: 1, unknownDatePolicy: "skip", resumeMode: "continue" } } }).where(eq(schema.editorialSection.id, socialSection.id));
+    assert.equal(await recoverInterruptedEditorialJobs(), 1); assert.equal(await recoverInterruptedEditorialJobs(), 0);
+    const recoveryRows = await database.select().from(schema.editorialJob);
+    assert.equal(recoveryRows.find(row => row.id === "recover-ok")!.status, "queued");
+    assert.equal(recoveryRows.find(row => row.id === "recover-ok")!.policyId, recoveryTemplate.policyId);
+    assert.equal(recoveryRows.find(row => row.id === "recover-cap")!.status, "failed");
+    assert.equal(recoveryRows.find(row => row.id === "recover-review")!.errorCode, "CONTENT_REVIEW_REQUIRED");
+    assert.equal(recoveryRows.find(row => row.id === "recover-revoked")!.status, "failed");
+    assert.equal(recoveryRows.find(row => row.id === "recover-date")!.status, "cancelled");
+    assert.equal(recoveryRows.find(row => row.id === "recover-date")!.errorCode, "AUTO_DATE_UNKNOWN");
+    assert.equal((await database.select().from(schema.auditEvent).where(eq(schema.auditEvent.action, "editorial.job.recovered"))).length, 1);
   } finally { await client.close(); globalThis.__mediaCommandPglite = undefined; }
 });

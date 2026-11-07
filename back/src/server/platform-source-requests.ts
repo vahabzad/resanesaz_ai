@@ -1,3 +1,4 @@
+import { detectSocialPlatform, normalizeSocialSource, isSocialPlatform } from "../social/platforms";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
 import { crawlerDefinition, crawlerVersion, media, mediaCreationRequest, mediaInboxItem, mediaSourceSubscription, platformCategory, rawArticle, source, sourceAccessRequest, user } from "@/db/schema";
@@ -58,9 +59,12 @@ export async function reviewPlatformSourceAccessRequest(input: {
     return { id: updated.id, status: updated.status, sourceId: updated.sourceId, runId: null };
   }
 
-  const normalizedUrl = new URL(requestRow.url).toString();
+  const platform = requestRow.sourceType === "social" ? requestRow.platform && isSocialPlatform(requestRow.platform) ? requestRow.platform : detectSocialPlatform(requestRow.url) : null;
+  if (requestRow.sourceType === "social" && !platform) throw new PlatformSourceRequestError("پلتفرم این لینک پشتیبانی نمی‌شود؛ آدرس کانال یا صفحه را بررسی کنید.", 400);
+  const normalizedUrl = platform ? normalizeSocialSource(platform, requestRow.url) : new URL(requestRow.url).toString();
   if (input.action === "grant_existing") {
     const [candidate] = await db.select().from(source).where(eq(source.url, normalizedUrl)).limit(1);
+    if (platform && candidate && candidate.adapterKey !== platform) throw new PlatformSourceRequestError("نوع منبع ذخیره‌شده با پلتفرم درخواست تطبیق ندارد؛ منبع قدیمی باید اصلاح شود.", 409);
     if (!candidate || candidate.archivedAt || !candidate.mediaDeliveryEnabled) throw new PlatformSourceRequestError("منبع آماده و قابل‌استفاده‌ای با این لینک پیدا نشد.", 409);
     const ready = await db.select({ id: crawlerVersion.id }).from(crawlerDefinition).innerJoin(crawlerVersion, eq(crawlerVersion.definitionId, crawlerDefinition.id))
       .where(and(eq(crawlerDefinition.sourceId, candidate.id), eq(crawlerVersion.status, "active"))).limit(1);
@@ -81,6 +85,7 @@ export async function reviewPlatformSourceAccessRequest(input: {
   }
 
   let [existing] = await db.select().from(source).where(eq(source.url, normalizedUrl)).limit(1);
+  if (platform && existing && existing.adapterKey !== platform) throw new PlatformSourceRequestError("نوع منبع ذخیره‌شده با پلتفرم درخواست تطبیق ندارد؛ منبع قدیمی باید اصلاح شود.", 409);
   if (existing?.archivedAt) {
     await restorePlatformSource({ sourceId: existing.id, actorUserId: input.actorUserId, correlationId: input.correlationId });
     [existing] = await db.select().from(source).where(eq(source.id, existing.id)).limit(1);
@@ -94,7 +99,7 @@ export async function reviewPlatformSourceAccessRequest(input: {
     return { id: input.requestId, status: "crawler_queued", sourceId: existing.id, runId: result.runId };
   }
 
-  const created = await createPlatformSource({ actorUserId: input.actorUserId, correlationId: input.correlationId, sourceAccessRequestId: input.requestId, name: new URL(normalizedUrl).hostname, url: normalizedUrl, scheduleMinutes: 15, adapterKey: "web" });
+  const created = await createPlatformSource({ actorUserId: input.actorUserId, correlationId: input.correlationId, sourceAccessRequestId: input.requestId, name: new URL(normalizedUrl).hostname, url: normalizedUrl, scheduleMinutes: 15, adapterKey: platform ?? "web" });
   return { id: input.requestId, status: "crawler_queued", sourceId: created.sourceId, runId: created.runId };
 }
 

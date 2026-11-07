@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Check, Hammer, RefreshCw, ShieldCheck, X } from "lucide-react";
+import { detectSocialPlatform } from "../../lib/contracts/social-source";
 import { apiRequest } from "@/lib/api-client";
 
 export type SourceAccessRequestRow = {
@@ -14,9 +15,9 @@ export type SourceAccessRequestRow = {
 
 type ReviewAction = "reject" | "grant_existing" | "queue_crawler";
 
-function statusLabel(status: string) {
-  if (status === "crawler_queued") return "در صف ساخت کراولر";
-  if (status === "crawler_failed") return "ساخت کراولر ناموفق";
+function statusLabel(status: string, social: boolean) {
+  if (status === "crawler_queued") return social ? "در صف آزمون دریافت" : "در صف ساخت کراولر";
+  if (status === "crawler_failed") return social ? "آزمون دریافت ناموفق" : "ساخت کراولر ناموفق";
   if (status === "access_granted") return "دسترسی اعطا شد";
   if (status === "rejected") return "رد شده";
   return "در انتظار بررسی";
@@ -52,9 +53,9 @@ export function SourceAccessRequests({ initialRequests }: { initialRequests: Sou
           <td><b>{item.mediaName}</b><small>{item.requestedBy ?? "ادمین"}</small></td>
           <td><b>{item.sourceType === "website" ? "وب‌سایت" : "شبکهٔ اجتماعی"}</b><a href={item.url} target="_blank" rel="noreferrer" dir="ltr">{item.url}</a></td>
           <td>{item.kind === "category_extension" && <b>درخواست افزایش دسته‌بندی</b>}{item.sourceType === "website" ? item.categoryMode === "all" ? "همهٔ دسته‌ها" : item.categories.length ? item.categories.join("، ") : "دسته‌ای انتخاب نشده" : "—"}</td>
-          <td><span className={`source-request-status ${item.status}`}>{statusLabel(item.status)}</span>{item.status === "crawler_queued" && <Link className="source-request-crawler-link" href="/platform/sources">مشاهدهٔ صف کراولر</Link>}</td>
+          <td><span className={`source-request-status ${item.status}`}>{statusLabel(item.status, item.sourceType === "social")}</span>{item.status === "crawler_queued" && <Link className="source-request-crawler-link" href="/platform/sources">مشاهدهٔ صف کراولر</Link>}{item.status === "crawler_failed" && item.sourceType === "social" && <Link className="source-request-crawler-link" href={`/platform/sources?socialLogin=${encodeURIComponent(detectSocialPlatform(item.url) ?? "")}`}>بررسی نشست و آزمون دریافت</Link>}</td>
           <td>{!item.mediaApproved ? <Link href="/platform/media-requests">ابتدا درخواست رسانه را بررسی کنید</Link> : canReview ? <div className="source-request-actions">
-            {item.kind === "category_extension" ? <button disabled={busy === item.id} onClick={() => void review(item.id, "grant_existing")}><ShieldCheck size={14} />تأیید دسته‌های بیشتر</button> : item.existingCrawlerAvailable ? <button disabled={busy === item.id} onClick={() => void review(item.id, "grant_existing")}><ShieldCheck size={14} />اعطای دسترسی از کراولر موجود</button> : item.crawlerReady ? <small className="source-request-blocked">کراولر آماده است، اما منبع فعلاً قابل‌ارائه به رسانه نیست. وضعیت منبع را در صفحهٔ منابع بررسی کنید.</small> : <button disabled={busy === item.id} onClick={() => void review(item.id, "queue_crawler")}><Hammer size={14} />تأیید و صف ساخت کراولر</button>}
+            {item.kind === "category_extension" ? <button disabled={busy === item.id} onClick={() => void review(item.id, "grant_existing")}><ShieldCheck size={14} />تأیید دسته‌های بیشتر</button> : item.existingCrawlerAvailable ? <button disabled={busy === item.id} onClick={() => void review(item.id, "grant_existing")}><ShieldCheck size={14} />اعطای دسترسی از کراولر موجود</button> : item.crawlerReady ? <small className="source-request-blocked">کراولر آماده است، اما منبع فعلاً قابل‌ارائه به رسانه نیست. وضعیت منبع را در صفحهٔ منابع بررسی کنید.</small> : <button disabled={busy === item.id} onClick={() => void review(item.id, "queue_crawler")}><Hammer size={14} />{item.sourceType === "social" ? "تأیید و آزمون دریافت مرورگری" : "تأیید و صف ساخت کراولر"}</button>}
             {item.status === "pending" && <button className="reject" disabled={busy === item.id} onClick={() => void review(item.id, "reject")}><X size={14} />رد درخواست</button>}
           </div> : <span className="source-request-done"><Check size={14} />بررسی‌شده</span>}</td>
         </tr>;

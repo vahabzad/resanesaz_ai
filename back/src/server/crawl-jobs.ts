@@ -1,3 +1,7 @@
+import { isSocialBrowserBusy } from "../social/browser-runtime";
+import { isSocialPlatform, SocialCrawlerError } from "../social/platforms";
+import { runSocialCrawler, validateSocialCrawler } from "../social/crawler";
+import { CrawlerOperationError } from "../social/engine/domain/operations/types/Operations.types";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, lt, isNull, sql } from "drizzle-orm";
 import { crawlerDefinition, crawlerVersion, crawlRun, crawlRunEvent, mediaInboxItem, mediaSourceSubscription, rawArticle, source, sourceAccessRequest } from "@/db/schema";
@@ -11,6 +15,7 @@ import { runWebCrawler, fetchFullArticle, describeArticleFailure, safeArticleLog
 import { buildCrawler, CrawlerBuildError, type CrawlerDebugContext } from "@/src/server/crawler-builder";
 import { parseRecipe } from "@/src/server/crawler-recipe";
 import { registerSourceCategories } from "./category-mappings";
+import { grantValidatedCrawlerRequests, lockCrawlerAccessMedia } from "./crawler-access-recovery";
 
 type CrawlTrigger = "manual" | "schedule";
 const activeRunControllers = new Map<string, AbortController>();
@@ -56,13 +61,20 @@ async function currentRunState(runId: string) {
 
 export async function cancelActiveSourceRuns(sourceId: string) {
   const finishedAt = new Date();
-  const cancelled = await db
+  const cancelled = await db.transaction(async transaction => {
+    // Serialize stopping with debug activation and its immediate follow-up run.
+    await transaction.select({ id: source.id }).from(source).where(eq(source.id, sourceId)).for("update");
+    const runs = await transaction
     .update(crawlRun)
     .set({ status: "failed", errorCode: "USER_CANCELLED", finishedAt })
     .where(and(eq(crawlRun.sourceId, sourceId), inArray(crawlRun.status, ["queued", "running"])))
     .returning();
+    for (const run of runs) {
+      if (["build", "debug"].includes(run.trigger)) await transaction.update(crawlerVersion).set({ status: "failed" }).where(and(eq(crawlerVersion.id, run.crawlerVersionId), eq(crawlerVersion.status, "draft")));
+    }
+    return runs;
+  });
   for (const run of cancelled) {
-    if (["build", "debug"].includes(run.trigger)) await db.update(crawlerVersion).set({ status: "failed" }).where(and(eq(crawlerVersion.id, run.crawlerVersionId), eq(crawlerVersion.status, "draft")));
     await appendRunEvent(run.id, { stage: "worker", status: "failed", level: "warn", message: "اجرا با درخواست کاربر متوقف شد." });
     activeRunControllers.get(run.id)?.abort(new Error("USER_CANCELLED"));
   }
@@ -70,7 +82,7 @@ export async function cancelActiveSourceRuns(sourceId: string) {
 }
 
 function runErrorCode(error: unknown) {
-  if (error instanceof CrawlerBuildError) return error.code;
+  if (error instanceof CrawlerBuildError || error instanceof SocialCrawlerError || error instanceof CrawlerOperationError) return error.code;
   if (error instanceof Error && ["CODEX_EXECUTABLE_NOT_FOUND", "INVALID_RECIPE", "UPSTREAM_TIMEOUT"].includes(error.message)) return error.message;
   if (error instanceof UnsafeSourceUrlError) return "UNSAFE_SOURCE_URL";
   if (error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError")) return "UPSTREAM_TIMEOUT";
@@ -158,7 +170,7 @@ async function claimNextRun() {
   return claimed ?? null;
 }
 
-async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof claimNextRun>>>, builder = buildCrawler) {
+async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof claimNextRun>>>, builder = buildCrawler, socialAdapters = { run: runSocialCrawler, validate: validateSocialCrawler }) {
   console.info("crawl run started", { runId: run.id, sourceId: run.sourceId, trigger: run.trigger });
   const controller = new AbortController();
   activeRunControllers.set(run.id, controller);
@@ -180,45 +192,46 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
     if (!configuration || (!building && !configuration.enabled)) throw new Error("SOURCE_DISABLED");
     if (building) {
       const debugging = run.trigger === "debug";
-      const debug = debugging ? configuration.config.debugContext as CrawlerDebugContext : undefined;
+      const debug = configuration.config.debugContext as CrawlerDebugContext | undefined;
       if (debug) {
         const { validatedArticleUrls } = await import("./crawler-history");
         debug.knownArticleUrls = [...new Set([...(debug.knownArticleUrls ?? []), ...await validatedArticleUrls(run.sourceId, configuration.url)])].slice(0, 1000);
       }
-      const result = await builder(configuration.url, configuration.adapterKey, controller.signal, (event) => appendRunEvent(run.id, event), undefined, debug);
+      const result = isSocialPlatform(configuration.adapterKey)
+        ? await socialAdapters.validate(configuration.adapterKey, configuration.url, controller.signal, event => appendRunEvent(run.id, event))
+        : await builder(configuration.url, configuration.adapterKey, controller.signal, (event) => appendRunEvent(run.id, event), undefined, debug);
       controller.signal.throwIfAborted();
       if (!result.report.passed) throw new CrawlerBuildError("CRAWLER_VALIDATION_FAILED", result.report);
       if (configuration.adapterKey === "web") parseRecipe("recipe" in result.config ? result.config.recipe : undefined);
       const finishedAt = new Date();
       await db.transaction(async (transaction) => {
+        await lockCrawlerAccessMedia(transaction, run.sourceId);
         const [currentSource] = await transaction.select().from(source).where(and(eq(source.id, run.sourceId), isNull(source.archivedAt))).for("update");
         if (!currentSource) throw new Error("USER_CANCELLED");
         const [completed] = await transaction.update(crawlRun).set({ status: "succeeded", discoveredCount: result.report.discovered, failedCount: 0, finishedAt }).where(and(eq(crawlRun.id, run.id), eq(crawlRun.status, "running"))).returning();
         if (!completed) throw new Error("USER_CANCELLED");
-        const keepPaused = debugging && currentSource.status === "paused";
-        const [enabled] = await transaction.update(source).set({ enabled: !keepPaused, status: keepPaused ? "paused" : "active", lastErrorCode: null, updatedAt: finishedAt }).where(and(eq(source.id, run.sourceId), isNull(source.archivedAt))).returning();
+        const [enabled] = await transaction.update(source).set({ enabled: true, status: "active", lastErrorCode: null, updatedAt: finishedAt }).where(and(eq(source.id, run.sourceId), isNull(source.archivedAt))).returning();
         if (!enabled) throw new Error("USER_CANCELLED");
         const [version] = await transaction.select().from(crawlerVersion).where(eq(crawlerVersion.id, run.crawlerVersionId));
         await transaction.update(crawlerVersion).set({ status: "retired" }).where(and(eq(crawlerVersion.definitionId, version.definitionId), eq(crawlerVersion.status, "active")));
         await transaction.update(crawlerVersion).set({ status: "active", config: { ...result.config, ...(debugging ? { mode: "debug", previousVersionId: debug?.previousVersionId } : {}) } }).where(eq(crawlerVersion.id, run.crawlerVersionId));
-        const queuedRequests = await transaction.select().from(sourceAccessRequest).where(and(eq(sourceAccessRequest.sourceId, run.sourceId), eq(sourceAccessRequest.status, "crawler_queued"))).for("update");
-        for (const accessRequest of queuedRequests) {
-          await transaction.insert(mediaSourceSubscription).values({ id: `subscription_${randomUUID()}`, mediaId: accessRequest.mediaId, sourceId: run.sourceId, categoryMode: accessRequest.categoryMode, categoryIds: accessRequest.categoryIds, createdBy: accessRequest.reviewedBy ?? run.requestedBy }).onConflictDoUpdate({ target: [mediaSourceSubscription.mediaId, mediaSourceSubscription.sourceId], set: { enabled: true, categoryMode: accessRequest.categoryMode, categoryIds: accessRequest.categoryIds } });
-          const existingArticles = await transaction.select({ id: rawArticle.id, status: rawArticle.status }).from(rawArticle).where(eq(rawArticle.sourceId, run.sourceId));
-          if (existingArticles.length) await transaction.insert(mediaInboxItem).values(existingArticles.map((article) => ({ id: `inbox_${randomUUID()}`, mediaId: accessRequest.mediaId, rawArticleId: article.id, status: article.status }))).onConflictDoNothing();
-          await transaction.update(sourceAccessRequest).set({ status: "access_granted" }).where(eq(sourceAccessRequest.id, accessRequest.id));
-          await recordAuditEvent({ mediaId: accessRequest.mediaId, actorUserId: accessRequest.reviewedBy ?? run.requestedBy, action: "source_access_request.access_granted_after_crawler", targetType: "source_access_request", targetId: accessRequest.id, correlationId: run.correlationId, metadata: { sourceId: run.sourceId } }, transaction);
+        await grantValidatedCrawlerRequests(transaction, run.sourceId, run.correlationId);
+        if (debugging) {
+          const followupId = `crawl_run_${randomUUID()}`;
+          await transaction.insert(crawlRun).values({ id: followupId, sourceId: run.sourceId, crawlerVersionId: run.crawlerVersionId, trigger: "schedule", requestedBy: run.requestedBy, correlationId: `debug-followup:${run.id}` });
+          await recordAuditEvent({ mediaId: null, actorUserId: run.requestedBy, action: "source.crawl.queued_after_debug", targetType: "crawl_run", targetId: followupId, correlationId: run.correlationId, metadata: { sourceId: run.sourceId, debugRunId: run.id } }, transaction);
         }
         await recordAuditEvent({ mediaId: null, actorUserId: run.requestedBy, action: debugging ? "platform.crawler.debug.validated" : "platform.crawler.validated", targetType: "crawler_version", targetId: run.crawlerVersionId, correlationId: run.correlationId, metadata: { sourceId: run.sourceId, samples: result.report.samples.length, attempts: result.report.attempts } }, transaction);
       });
-      await appendRunEvent(run.id, { stage: "build-complete", status: "completed", message: `نسخهٔ ${debugging ? "اصلاح‌شده" : "جدید"} کراولر آزمون ${result.report.samples.length} نمونه را گذراند و جایگزین شد. نمونه‌های آزمون وارد صندوق رسانه‌ها نشدند.` });
+      await appendRunEvent(run.id, { stage: "build-complete", status: "completed", message: `نسخهٔ ${debugging ? "اصلاح‌شده" : "جدید"} کراولر آزمون ${result.report.samples.length} نمونه را گذراند و جایگزین شد.${debugging ? " کراولر فعال شد و دریافت واقعی خبر با نسخهٔ اصلاح‌شده فوراً در صف قرار گرفت." : ""} نمونه‌های آزمون وارد صندوق رسانه‌ها نشدند.` });
       return { status: "succeeded" as const, runId: run.id };
     }
+    const social = isSocialPlatform(configuration.adapterKey) ? await socialAdapters.run(configuration.adapterKey, configuration.url, controller.signal, event => appendRunEvent(run.id, event)) : null;
     const generated = configuration.adapterKey === "web"
       ? await runWebCrawler(configuration.url, controller.signal, (event) => appendRunEvent(run.id, event), configuration.config.recipe ? parseRecipe(configuration.config.recipe) : undefined, Array.isArray(configuration.config.articleUrls) ? configuration.config.articleUrls.filter((url): url is string => typeof url === "string").slice(0, 500) : [])
       : null;
     const rss = configuration.adapterKey === "rss" ? await fetchPublicXml(configuration.url) : null;
-    const items: Array<CrawledArticle & { externalId: string | null }> = generated ? generated.articles.map((item) => ({ ...item, externalId: null })) : parseRssFeed(rss!.body).map((item) => ({
+    const items: Array<CrawledArticle & { externalId: string | null }> = social ? social.articles : generated ? generated.articles.map((item) => ({ ...item, externalId: null })) : parseRssFeed(rss!.body).map((item) => ({
       externalId: item.externalId,
       url: item.canonicalUrl,
       title: item.title,
@@ -237,6 +250,7 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
     let rssFailures = 0;
 
     for (const item of items) {
+      controller.signal.throwIfAborted();
       let status = "new";
       let quarantineReason: string | null = null;
       try {
@@ -263,8 +277,12 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
         }
       }
 
-      const contentHash = createHash("sha256").update(`${item.url}\n${item.title}`).digest("hex");
-      await registerSourceCategories(run.sourceId, item.categories);
+      if (social && item.imageUrl) {
+        try { await assertPublicHttpsUrl(item.imageUrl); } catch { item.imageUrl = null; }
+      }
+      controller.signal.throwIfAborted();
+      const contentHash = createHash("sha256").update(social ? `${configuration.adapterKey}\n${item.externalId}` : `${item.url}\n${item.title}`).digest("hex");
+      if (!social) await registerSourceCategories(run.sourceId, item.categories);
       const publishedAt = item.publishedAt && !Number.isNaN(Date.parse(item.publishedAt)) ? new Date(item.publishedAt) : null;
       const inserted = await db.insert(rawArticle).values({
         id: `raw_${randomUUID()}`,
@@ -284,7 +302,9 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
         contentHash,
         status,
         quarantineReason,
-        provenance: configuration.adapterKey === "web"
+        provenance: social
+          ? { adapterKey: configuration.adapterKey, runtime: "browser", adapterVersion: 1, contractVersion: "2", externalId: item.externalId, crawlRunId: run.id }
+          : configuration.adapterKey === "web"
           ? { adapterKey: "web", runtime: "internal", contractVersion: "1", crawlRunId: run.id }
           : { adapterKey: "rss", feedUrl: rss!.finalUrl, contractVersion: "1", crawlRunId: run.id },
       }).onConflictDoNothing().returning();
@@ -295,9 +315,9 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
     }
 
     const finishedAt = new Date();
-    const discoveredCount = generated?.discovered ?? items.length;
-    const upstreamFailures = generated?.failed ?? rssFailures;
-    const { status, sourceStatus, errorCode } = crawlOutcome({ web: true, discovered: discoveredCount, extracted: items.length - rssFailures, failed: upstreamFailures });
+    const discoveredCount = social?.discovered ?? generated?.discovered ?? items.length;
+    const upstreamFailures = social?.failed ?? generated?.failed ?? rssFailures;
+    const { status, sourceStatus, errorCode } = crawlOutcome({ web: !social || social.failed > 0, discovered: discoveredCount, extracted: items.length - rssFailures, failed: upstreamFailures });
     const completelyFailed = status === "failed";
     const completed = await db.update(crawlRun).set({ status, errorCode, discoveredCount, insertedCount, duplicateCount, quarantinedCount, failedCount: upstreamFailures, finishedAt })
       .where(and(eq(crawlRun.id, run.id), eq(crawlRun.status, "running")))
@@ -325,7 +345,7 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
     const finishedAt = new Date();
     const buildReport = error instanceof CrawlerBuildError ? error.report : null;
     await db.update(crawlRun).set({ status: "failed", errorCode, finishedAt, ...(["build", "debug"].includes(run.trigger) ? { discoveredCount: buildReport?.discovered ?? 0, failedCount: buildReport?.samples.filter((sample) => !sample.passed).length ?? 0 } : {}) }).where(eq(crawlRun.id, run.id));
-    const [workingVersion] = run.trigger === "debug" ? await db.select({ id: crawlerVersion.id }).from(crawlerVersion).innerJoin(crawlerDefinition, eq(crawlerDefinition.id, crawlerVersion.definitionId)).where(and(eq(crawlerDefinition.sourceId, run.sourceId), eq(crawlerVersion.status, "active"))).limit(1) : [];
+    const [workingVersion] = ["build", "debug"].includes(run.trigger) ? await db.select({ id: crawlerVersion.id }).from(crawlerVersion).innerJoin(crawlerDefinition, eq(crawlerDefinition.id, crawlerVersion.definitionId)).where(and(eq(crawlerDefinition.sourceId, run.sourceId), eq(crawlerVersion.status, "active"))).limit(1) : [];
     if (!workingVersion) await db.update(source).set({ status: "failed", lastRunAt: finishedAt, lastErrorCode: errorCode, updatedAt: finishedAt }).where(eq(source.id, run.sourceId));
     if (["build", "debug"].includes(run.trigger)) await db.update(crawlerVersion).set({ status: "failed", config: { contractVersion: "2", mode: run.trigger, errorCode, validation: error instanceof CrawlerBuildError ? error.report : null } }).where(and(eq(crawlerVersion.id, run.crawlerVersionId), eq(crawlerVersion.status, "draft")));
     if (run.trigger === "build") {
@@ -342,6 +362,18 @@ async function executeClaimedRun(run: NonNullable<Awaited<ReturnType<typeof clai
       metadata: { sourceId: run.sourceId, errorCode },
     });
     const buildReasons: Record<string, string> = { CRAWLER_VALIDATION_FAILED: "نمونه‌های کافی با عنوان و متن معتبر استخراج نشدند؛ نسخه فعال نشد. گزارش آزمون را بررسی کنید.", CODEX_AUTH_REQUIRED: "ورود Codex روی میزبان بک‌اند معتبر نیست؛ وارد Codex شوید و ساخت را تکرار کنید.", CODEX_EXECUTABLE_NOT_FOUND: "Codex روی میزبان بک‌اند پیدا نشد؛ نصب و تنظیم مسیر اجرا را بررسی کنید.", CODEX_RATE_LIMITED: "سهمیه یا محدودیت درخواست Codex اجازهٔ ساخت نداد؛ بعداً دوباره تلاش کنید.", CODEX_GENERATION_TIMEOUT: "مهلت تولید الگو با Codex تمام شد؛ نسخه فعال نشد.", CODEX_RECIPE_FAILED: "Codex نتوانست الگوی معتبر تولید کند؛ ورود و دسترسی مدل را بررسی و ساخت را تکرار کنید.", CODEX_SCHEMA_REJECTED: "مدل قالب خروجی الگو را نپذیرفت؛ تنظیم مدل/SDK باید بررسی شود.", RSS_VALIDATION_FAILED: "خوراک RSS خبر معتبر ندارد؛ آدرس خوراک را بررسی کنید." };
+    Object.assign(buildReasons, {
+      SOCIAL_PROFILE_BUSY: "پروفایل مرورگر این پلتفرم در حال استفاده است؛ اجرای هم‌زمان یا پنجرهٔ ورود را ببندید و دوباره تلاش کنید.",
+      SOCIAL_BROWSER_FAILED: "مرورگر روی میزبان راه‌اندازی نشد؛ تنظیم مسیر و وضعیت پروفایل را بررسی کنید.",
+      AUTH_REQUIRED: "نشست این شبکهٔ اجتماعی وارد حساب نشده یا منقضی شده است؛ روی میزبان بک‌اند ورود مرورگری را انجام دهید.",
+      SOCIAL_BROWSER_NOT_INSTALLED: "مرورگر Chrome/Chromium/Edge روی میزبان پیدا نشد؛ مسیر SOCIAL_BROWSER_EXECUTABLE را تنظیم کنید.",
+      SOCIAL_CRAWL_TIMEOUT: "مهلت دریافت مرورگری تمام شد؛ نشست و دسترسی شبکه را بررسی کنید.",
+      SOCIAL_EMPTY_RESULT: "هیچ پست یا پروفایل قابل تأییدی دریافت نشد؛ آدرس و نشست را بررسی کنید.",
+      CRAWLER_BUILD_TIMEOUT: "مهلت کل تحلیل و آزمون کراولر تمام شد؛ نسخهٔ جدید تأیید نشد.",
+      CRAWLER_REQUEST_BUDGET: "سقف درخواست‌های تحلیل و آزمون رسید؛ نمونه‌های باقی‌مانده تأیید نشده‌اند.",
+      CRAWLER_MEMORY_BUDGET: "سقف حافظهٔ صفحات تحلیل‌شده رسید؛ آزمون بدون حذف نمونه‌های اجباری متوقف شد.",
+      CRAWLER_EVIDENCE_BUDGET: "حجم شواهد برای تولید الگو بیش از حد مجاز است؛ نسخهٔ جدید تأیید نشد.",
+    });
     await appendRunEvent(run.id, { stage: "worker", status: "failed", level: "error", errorCode, message: buildReasons[errorCode] ?? (errorCode === "USER_CANCELLED" ? "اجرا توسط کاربر متوقف شد." : `اجرای منبع با خطای ${errorCode} پایان یافت.`) });
     return { status: "failed" as const, runId: run.id, errorCode };
   } finally {
@@ -363,7 +395,9 @@ async function failStaleRuns(now = new Date()) {
     .returning();
 
   for (const run of staleRuns) {
-    await db.update(source)
+    const [workingVersion] = ["build", "debug"].includes(run.trigger) ? await db.select({ id: crawlerVersion.id }).from(crawlerVersion).innerJoin(crawlerDefinition, eq(crawlerDefinition.id, crawlerVersion.definitionId)).where(and(eq(crawlerDefinition.sourceId, run.sourceId), eq(crawlerVersion.status, "active"))).limit(1) : [];
+    if (["build", "debug"].includes(run.trigger)) await db.update(crawlerVersion).set({ status: "failed" }).where(and(eq(crawlerVersion.id, run.crawlerVersionId), eq(crawlerVersion.status, "draft")));
+    if (!workingVersion) await db.update(source)
       .set({ status: "failed", lastRunAt: now, lastErrorCode: "WORKER_STALLED", updatedAt: now })
       .where(eq(source.id, run.sourceId));
     await recordAuditEvent({
@@ -387,6 +421,7 @@ export async function enqueueDueSourceRuns(now = new Date()) {
   let queued = 0;
   for (const candidate of candidates) {
     if (!isSourceDue(candidate.lastRunAt, candidate.scheduleMinutes, now)) continue;
+    if (isSocialPlatform(candidate.adapterKey) && isSocialBrowserBusy(candidate.adapterKey)) continue;
     const result = await enqueueSourceRun({
       sourceId: candidate.id,
       actorUserId: null,
@@ -398,14 +433,14 @@ export async function enqueueDueSourceRuns(now = new Date()) {
   return queued;
 }
 
-export async function runCrawlWorkerCycle(maxJobs = 4, builder = buildCrawler) {
+export async function runCrawlWorkerCycle(maxJobs = 4, builder = buildCrawler, socialAdapters = { run: runSocialCrawler, validate: validateSocialCrawler }) {
   const recovered = await failStaleRuns();
   const scheduled = await enqueueDueSourceRuns();
   const results = [];
   for (let index = 0; index < maxJobs; index += 1) {
     const run = await claimNextRun();
     if (!run) break;
-    results.push(await executeClaimedRun(run, builder));
+    results.push(await executeClaimedRun(run, builder, socialAdapters));
   }
   return { recovered, scheduled, processed: results.length, results };
 }

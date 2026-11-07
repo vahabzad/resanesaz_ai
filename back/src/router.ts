@@ -1,3 +1,6 @@
+import { socialLoginManager, SocialLoginError, allowedSocialLoginRequest } from "./social/login-manager";
+import { socialPlatformKeys } from "@media/contracts/social-platforms";
+import { resolveSocialSource, SocialSourceAddressError, SocialCrawlerError } from "./social/platforms";
 import { and, desc, eq, ne } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -10,7 +13,7 @@ import { getDashboardContext } from "@/src/server/context";
 import { enqueueSourceRun } from "@/src/server/crawl-jobs";
 import { db } from "@/src/server/database";
 import { getCodexSdkStatus } from "@/src/server/codex-status";
-import { getInboxWorkspace } from "@/src/server/inbox";
+import { getInboxWorkspace, getInboxArticle, inboxListInput } from "@/src/server/inbox";
 import { mediaRoles } from "@/src/server/permissions";
 import {
   createPlatformSource,
@@ -41,7 +44,7 @@ import { InvalidMediaLogoError, resolveMediaLogo } from "@/src/server/media-logo
 import { generateLogoPreview, LogoGenerationError, logoRequestSchema } from "@/src/server/branding";
 import { listPlatformSourceAccessRequests, PlatformSourceRequestError, reviewPlatformSourceAccessRequest } from "@/src/server/platform-source-requests";
 import { editorialListInput } from "@/src/server/editorial-list";
-import { enqueueEditorialJob, editorialQueue, changeEditorialJob, queueListInput } from "@/src/server/editorial-jobs";
+import { enqueueEditorialJob, editorialQueue, editorialJobDetail, changeEditorialJob, queueListInput } from "@/src/server/editorial-jobs";
 import { authenticatedSiteRequest, publicSiteRequest } from "./site-router";
 import { SiteError } from "./server/sites";
 import { MediaRequestError, listMediaRequests, mediaRequestsInput, mediaReviewInput, reviewMediaRequest, mediaRequestStatus } from "./server/media-requests";
@@ -53,7 +56,7 @@ const createSourceSchema = z.object({
   name: z.string().trim().min(2).max(120),
   url: z.url().max(2_048),
   scheduleMinutes: z.number().int().min(5).max(1_440).default(15),
-  adapterKey: z.enum(["web", "rss"]).default("web"),
+  adapterKey: z.enum(["web", "rss", ...socialPlatformKeys]).default("web"),
 }).strict();
 const selectMediaSchema = z.object({ mediaId: idSchema }).strict();
 const subscriptionSchema = z.object({ sourceId: idSchema }).strict();
@@ -92,10 +95,18 @@ const mediaSetupPreferencesSchema = z.object({
 }).strict();
 const sourceAccessRequestInput = z.object({
   sourceType: z.enum(["website", "social"]),
-  url: z.url().max(2_048).refine((value) => new URL(value).protocol === "https:", "آدرس باید HTTPS باشد."),
+  url: z.string().trim().min(1).max(2_048),
+  platform: z.enum(socialPlatformKeys).optional(),
   categoryMode: z.enum(["all", "selected"]).optional(),
   categoryIds: z.array(idSchema).max(100).optional(),
 }).strict().superRefine((value, context) => {
+  if (value.sourceType === "website") {
+    const validUrl = z.url().safeParse(value.url);
+    if (!validUrl.success || new URL(value.url).protocol !== "https:") context.addIssue({ code: "custom", path: ["url"], message: "لینک وب‌سایت باید HTTPS باشد." });
+    if (value.platform) context.addIssue({ code: "custom", path: ["platform"], message: "انتخاب شبکه فقط برای منبع اجتماعی است." });
+  } else {
+    try { resolveSocialSource(value.platform, value.url); } catch (error) { context.addIssue({ code: "custom", path: ["url"], message: error instanceof SocialSourceAddressError ? error.message : "آیدی یا لینک معتبر وارد کنید." }); }
+  }
   if (value.sourceType === "website" && !value.categoryMode) context.addIssue({ code: "custom", path: ["categoryMode"], message: "انتخاب همهٔ دسته‌ها یا دسته‌های مشخص لازم است." });
   if (value.sourceType === "website" && value.categoryMode === "selected" && !value.categoryIds?.length) context.addIssue({ code: "custom", path: ["categoryIds"], message: "حداقل یک دسته انتخاب کنید." });
   if (value.sourceType === "website" && value.categoryMode === "all" && value.categoryIds?.length) context.addIssue({ code: "custom", path: ["categoryIds"], message: "برای دریافت همهٔ دسته‌ها، شناسهٔ دسته ارسال نکنید." });
@@ -334,6 +345,23 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       return apiSuccess(await getCodexSdkStatus(), requestId);
     }
 
+    if (request.method === "GET" && pathname === "/api/v1/platform/social-browser-sessions") {
+      if (!await platformSession(request)) return apiError("FORBIDDEN", "این عملیات فقط برای سوپر ادمین مجاز است.", requestId, 403);
+      return apiSuccess(socialLoginManager.workspace(), requestId);
+    }
+    const socialLoginMatch = pathname.match(/^\/api\/v1\/platform\/social-browser-sessions\/([^/]+)\/(open|close)$/);
+    if (request.method === "POST" && socialLoginMatch) {
+      const session = await platformSession(request);
+      if (!session) return apiError("FORBIDDEN", "این عملیات فقط برای سوپر ادمین مجاز است.", requestId, 403);
+      if (!allowedSocialLoginRequest(request)) return apiError("FORBIDDEN", "درخواست ورود باید از پنل مجاز ارسال شود.", requestId, 403);
+      const platform = z.enum(socialPlatformKeys).safeParse(socialLoginMatch[1]);
+      const body = z.object({}).strict().safeParse(await request.json().catch(() => null));
+      if (!platform.success || !body.success) return apiError("INVALID_INPUT", "شبکهٔ معتبر را انتخاب کنید؛ ورود فقط به آدرس رسمی همان شبکه انجام می‌شود.", requestId, 400);
+      await recordAuditEvent({ actorUserId: session.user.id, correlationId: requestId, action: `platform.social_browser.login_${socialLoginMatch[2]}_requested`, targetType: "social_browser_session", targetId: platform.data });
+      const result = socialLoginMatch[2] === "open" ? socialLoginManager.start(platform.data) : await socialLoginManager.close(platform.data);
+      return apiSuccess(result, requestId, 202);
+    }
+
     if (request.method === "GET" && pathname === "/api/v1/platform/sources") {
       if (!await platformSession(request)) return apiError("FORBIDDEN", "این عملیات فقط برای مدیر پلتفرم مجاز است.", requestId, 403);
       return apiSuccess(await getPlatformSourcesWorkspace(), requestId);
@@ -526,14 +554,14 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     if (pathname === "/api/v1/media/source-access-requests" && request.method === "GET") {
       if (!can(context.activeMedia.role, { source: ["read"] })) return apiError("FORBIDDEN", "اجازهٔ مشاهدهٔ درخواست‌های منبع را ندارید.", requestId, 403);
       const preferences = await getMediaSetupPreferences(context.activeMedia.id);
-      const requests = await db.select({ id: sourceAccessRequest.id, sourceType: sourceAccessRequest.sourceType, url: sourceAccessRequest.url, categoryMode: sourceAccessRequest.categoryMode, categoryIds: sourceAccessRequest.categoryIds, sourceId: sourceAccessRequest.sourceId, status: sourceAccessRequest.status, createdAt: sourceAccessRequest.createdAt }).from(sourceAccessRequest).where(and(eq(sourceAccessRequest.mediaId, context.activeMedia.id), eq(sourceAccessRequest.kind, "source_access"), ne(sourceAccessRequest.status, "withdrawn"))).orderBy(desc(sourceAccessRequest.createdAt));
+      const requests = await db.select({ id: sourceAccessRequest.id, sourceType: sourceAccessRequest.sourceType, platform: sourceAccessRequest.platform, url: sourceAccessRequest.url, categoryMode: sourceAccessRequest.categoryMode, categoryIds: sourceAccessRequest.categoryIds, sourceId: sourceAccessRequest.sourceId, status: sourceAccessRequest.status, createdAt: sourceAccessRequest.createdAt }).from(sourceAccessRequest).where(and(eq(sourceAccessRequest.mediaId, context.activeMedia.id), eq(sourceAccessRequest.kind, "source_access"), ne(sourceAccessRequest.status, "withdrawn"))).orderBy(desc(sourceAccessRequest.createdAt));
       return apiSuccess(requests.map(row => !preferences.setupCompleted && row.status === "pending" ? { ...row, status: "draft" } : row), requestId);
     }
     const sourceDraftMatch = pathname.match(/^\/api\/v1\/media\/source-access-requests\/([^/]+)$/);
     if (sourceDraftMatch && request.method === "PATCH") {
       if (!can(context.activeMedia.role, { source: ["update"] })) return apiError("FORBIDDEN", "اجازهٔ ویرایش پیش‌نویس منبع را ندارید.", requestId, 403);
       const parsed = sourceAccessRequestInput.safeParse(await request.json().catch(() => null));
-      if (!parsed.success) return apiError("INVALID_INPUT", "لینک، نوع منبع و دسته‌بندی‌های معتبر را انتخاب کنید.", requestId, 400);
+      if (!parsed.success) return apiError("INVALID_INPUT", parsed.error.issues[0]?.message ?? "مشخصات منبع معتبر نیست.", requestId, 400);
       return apiSuccess(await updateSourceDraft(context.activeMedia.id, sourceDraftMatch[1], context.user.id, requestId, parsed.data), requestId);
     }
     if (sourceDraftMatch && request.method === "DELETE") {
@@ -543,20 +571,22 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     if (pathname === "/api/v1/media/source-access-requests" && request.method === "POST") {
       if (!can(context.activeMedia.role, { source: ["create"] })) return apiError("FORBIDDEN", "اجازهٔ درخواست منبع را ندارید.", requestId, 403);
       const parsed = sourceAccessRequestInput.safeParse(await request.json().catch(() => null));
-      if (!parsed.success) return apiError("INVALID_INPUT", "نوع و لینک معتبر منبع لازم است.", requestId, 400);
+      if (!parsed.success) return apiError("INVALID_INPUT", parsed.error.issues[0]?.message ?? "مشخصات منبع معتبر نیست.", requestId, 400);
       const categoryIds = parsed.data.categoryIds ?? [];
       if (parsed.data.sourceType === "website" && parsed.data.categoryMode === "selected") {
         const validCategories = await db.select({ id: platformCategory.id }).from(platformCategory).where(eq(platformCategory.active, true));
         if (categoryIds.some((id) => !validCategories.some((category) => category.id === id))) return apiError("INVALID_INPUT", "یکی از دسته‌بندی‌های انتخاب‌شده دیگر فعال نیست.", requestId, 400);
       }
-      const normalizedUrl = new URL(parsed.data.url).toString();
+      const socialSource = parsed.data.sourceType === "social" ? resolveSocialSource(parsed.data.platform, parsed.data.url) : null;
+      const socialPlatform = socialSource?.platform ?? null;
+      const normalizedUrl = socialSource?.url ?? new URL(parsed.data.url).toString();
       const created = await db.transaction(async tx => {
         const [owner] = await tx.select({ metadata: media.metadata }).from(media).where(eq(media.id, context.activeMedia.id)).for("update");
         if (!owner) throw new MediaSetupError("رسانه پیدا نشد.", 404);
         const existing = await tx.select({ url: sourceAccessRequest.url }).from(sourceAccessRequest).where(and(eq(sourceAccessRequest.mediaId, context.activeMedia.id), ne(sourceAccessRequest.status, "withdrawn")));
         if (existing.some(row => sourceRequestKey(row.url) === sourceRequestKey(normalizedUrl))) throw new MediaSetupError("این منبع را قبلاً به همین رسانه اضافه کرده‌اید؛ ثبت تکراری ممکن نیست.", 409);
         const status = setupIsComplete(owner.metadata) ? "pending" : "draft";
-        const [row] = await tx.insert(sourceAccessRequest).values({ id: `sar_${randomUUID()}`, mediaId: context.activeMedia.id, requestedBy: context.user.id, status, sourceType: parsed.data.sourceType, platform: null, categoryMode: parsed.data.categoryMode ?? null, categoryIds, name: new URL(normalizedUrl).hostname, url: normalizedUrl }).returning();
+        const [row] = await tx.insert(sourceAccessRequest).values({ id: `sar_${randomUUID()}`, mediaId: context.activeMedia.id, requestedBy: context.user.id, status, sourceType: parsed.data.sourceType, platform: socialPlatform, categoryMode: parsed.data.categoryMode ?? null, categoryIds, name: new URL(normalizedUrl).hostname, url: normalizedUrl }).returning();
         await recordAuditEvent({ mediaId: context.activeMedia.id, actorUserId: context.user.id, action: status === "draft" ? "source_access_request.draft_saved" : "source_access_request.created", targetType: "source_access_request", targetId: row.id, correlationId: requestId }, tx);
         return row;
       });
@@ -565,6 +595,13 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     const siteResponse = await authenticatedSiteRequest(request, requestId, context);
     if (siteResponse) return siteResponse;
 
+    const jobDetailMatch = pathname.match(/^\/api\/v1\/editorial\/jobs\/([^/]+)$/);
+    if (request.method === 'GET' && jobDetailMatch) {
+      if (!can(context.activeMedia.role, { story: ["read"] })) return apiError("FORBIDDEN", "به جزئیات کار دسترسی ندارید.", requestId, 403);
+      const parsed = idSchema.safeParse(decodeURIComponent(jobDetailMatch[1]));
+      if (!parsed.success) return apiError("INVALID_INPUT", "شناسهٔ کار معتبر نیست.", requestId, 400);
+      return apiSuccess(await editorialJobDetail(context.activeMedia.id, parsed.data), requestId);
+    }
     if (pathname === "/api/v1/editorial/jobs") {
       if (request.method === "GET") {
         if (!can(context.activeMedia.role, { story: ["read"] })) return apiError("FORBIDDEN", "به صف دسترسی ندارید.", requestId, 403);
@@ -666,11 +703,20 @@ export async function handleApiRequest(request: Request): Promise<Response> {
       }
     }
 
-    if (request.method === "GET" && pathname === "/api/v1/articles") {
+    const inboxDetailMatch = pathname.match(/^\/api\/v1\/articles\/([^/]+)$/);
+    if (request.method === "GET" && (pathname === "/api/v1/articles" || inboxDetailMatch)) {
       if (!can(context.activeMedia.role, { source: ["read"] })) return apiError("FORBIDDEN", "به اخبار ورودی این رسانه دسترسی ندارید.", requestId, 403);
       const allowed = context.isPlatformAdmin ? undefined : await grantedMediaSourceIds(context.activeMedia.id);
       if (allowed && !allowed.length) return apiError("FORBIDDEN", "اخبار ورودی پس از تأیید رسانه و دسترسی به حداقل یک منبع فعال می‌شود.", requestId, 403);
-      return apiSuccess(await getInboxWorkspace(context.activeMedia.id, allowed), requestId);
+      if (inboxDetailMatch) {
+        const parsed = idSchema.safeParse(decodeURIComponent(inboxDetailMatch[1]));
+        if (!parsed.success) return apiError("INVALID_INPUT", "شناسهٔ خبر معتبر نیست.", requestId, 400);
+        const article = await getInboxArticle(context.activeMedia.id, parsed.data, allowed);
+        return article ? apiSuccess(article, requestId) : apiError("NOT_FOUND", "خبر در منابع مجاز این رسانه پیدا نشد.", requestId, 404);
+      }
+      const parsed = inboxListInput.safeParse(Object.fromEntries(new URL(request.url).searchParams));
+      if (!parsed.success) return apiError("INVALID_INPUT", "فیلترهای اخبار معتبر نیستند.", requestId, 400);
+      return apiSuccess(await getInboxWorkspace(context.activeMedia.id, allowed, parsed.data), requestId);
     }
 
     if (pathname === "/api/v1/sources") {
@@ -719,6 +765,9 @@ export async function handleApiRequest(request: Request): Promise<Response> {
     if (error instanceof PlatformMediaAdminError) return apiError(error.status === 404 ? "NOT_FOUND" : "INVALID_INPUT", error.message, requestId, error.status);
     if (error instanceof SiteError) return apiError(error.status === 404 ? "NOT_FOUND" : "INVALID_INPUT", error.message, requestId, error.status);
     if (error instanceof EditorialError) return apiError(error.status === 404 ? "NOT_FOUND" : "INVALID_INPUT", error.message, requestId, error.status);
+    if (error instanceof SocialLoginError) return apiError("CONFLICT", error.code === "SOCIAL_PROFILE_BUSY" ? "مرورگر این شبکه در حال دریافت یا ورود است؛ پس از پایان دوباره تلاش کنید." : "بازکردن مرورگر از پنل روی این میزبان فعال نیست؛ از راهنمای ورود روی میزبان استفاده کنید.", requestId, 409);
+    if (error instanceof SocialSourceAddressError) return apiError("INVALID_INPUT", error.message, requestId, 400);
+    if (error instanceof SocialCrawlerError) return apiError("INVALID_INPUT", "آدرس کانال یا صفحه با پلتفرم انتخاب‌شده تطبیق ندارد؛ لینک عمومی پروفایل را وارد کنید.", requestId, 400);
     if (error instanceof UnsafeSourceUrlError) return apiError("INVALID_INPUT", "آدرس منبع عمومی و امن نیست.", requestId, 400);
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
     if (code === "23505") return apiError("INVALID_INPUT", "این رکورد قبلاً ثبت شده است.", requestId, 409);
